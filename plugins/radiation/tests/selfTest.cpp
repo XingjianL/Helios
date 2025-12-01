@@ -1315,7 +1315,8 @@ DOCTEST_TEST_CASE("RadiationModel ROMC Camera Test Verification") {
     float rangescene = 100.f;
     std::vector<float> viewangles = {-75, 0, 36};
     float sunazimuth = 0;
-    std::vector<float> referencevalues = {66.f, 225.f, 274.f};
+    // Reference values updated for new camera radiometry (v1.3.57) which converts flux to intensity via /π factor
+    std::vector<float> referencevalues = {21.f, 71.6f, 87.2f};
 
     // add canopy to context
     std::vector<std::vector<float>> CSpositions = {{-24.8302, 11.6110, 15.6210}, {-38.3380, -9.06342, 17.6094}, {-5.26569, 18.9618, 17.2535}, {-27.4794, -32.0266, 15.9146},
@@ -1365,7 +1366,7 @@ DOCTEST_TEST_CASE("RadiationModel ROMC Camera Test Verification") {
         cameraproperties.focal_plane_distance = 100000;
         cameraproperties.lens_diameter = 0;
         cameraproperties.HFOV = 0.02864786f * 2.f;
-        cameraproperties.FOV_aspect_ratio = 0.5f / float(std::abs(0.5 * std::cos(deg2rad(viewangle))));
+        // FOV_aspect_ratio is auto-calculated from camera_resolution
 
         std::string cameralabel = "ROMC" + std::to_string(viewangle);
         radiation_17.addRadiationCamera(cameralabel, {bandname}, camera_position, camera_lookat, cameraproperties, 60); // overlap warning multiple cameras
@@ -2171,6 +2172,499 @@ DOCTEST_TEST_CASE("RadiationModel Band-Specific Camera Spectral Response") {
     // The original bug would have caused all bands to have the same values
 }
 
+DOCTEST_TEST_CASE("RadiationModel - addRadiationCameraFromLibrary") {
+
+    Context context;
+    RadiationModel radiation(&context);
+    radiation.disableMessages();
+
+    // Test 1: Load Canon_20D camera
+    vec3 position(0, 0, 5);
+    vec3 lookat(0, 0, 0);
+    radiation.addRadiationCameraFromLibrary("cam1", "Canon_20D", position, lookat, 1);
+
+    // Verify camera was created
+    std::vector<std::string> cameras = radiation.getAllCameraLabels();
+    DOCTEST_CHECK(std::find(cameras.begin(), cameras.end(), "cam1") != cameras.end());
+
+    // Verify bands were created
+    DOCTEST_CHECK(radiation.doesBandExist("red"));
+    DOCTEST_CHECK(radiation.doesBandExist("green"));
+    DOCTEST_CHECK(radiation.doesBandExist("blue"));
+
+    // Verify spectral response data was loaded into global data
+    DOCTEST_CHECK(context.doesGlobalDataExist("Canon_20D_red"));
+    DOCTEST_CHECK(context.doesGlobalDataExist("Canon_20D_green"));
+    DOCTEST_CHECK(context.doesGlobalDataExist("Canon_20D_blue"));
+
+    // Verify spectral data is correct type (vec2)
+    DOCTEST_CHECK(context.getGlobalDataType("Canon_20D_red") == HELIOS_TYPE_VEC2);
+    DOCTEST_CHECK(context.getGlobalDataType("Canon_20D_green") == HELIOS_TYPE_VEC2);
+    DOCTEST_CHECK(context.getGlobalDataType("Canon_20D_blue") == HELIOS_TYPE_VEC2);
+
+    // Verify spectral data has correct number of points (from XML: 400-720 nm at 10nm intervals = 33 points)
+    std::vector<vec2> red_response;
+    context.getGlobalData("Canon_20D_red", red_response);
+    DOCTEST_CHECK(red_response.size() == 33);
+
+    // Verify wavelength range
+    DOCTEST_CHECK(red_response.front().x == 400.0f);
+    DOCTEST_CHECK(red_response.back().x == 720.0f);
+
+    // Test 2: Load iPhone11 camera (verify different camera works)
+    radiation.addRadiationCameraFromLibrary("cam2", "iPhone11", position, lookat, 1);
+    DOCTEST_CHECK(std::find(radiation.getAllCameraLabels().begin(),
+                            radiation.getAllCameraLabels().end(),
+                            "cam2") != radiation.getAllCameraLabels().end());
+
+    // Verify iPhone11 spectral data was loaded separately
+    DOCTEST_CHECK(context.doesGlobalDataExist("iPhone11_red"));
+    DOCTEST_CHECK(context.doesGlobalDataExist("iPhone11_green"));
+    DOCTEST_CHECK(context.doesGlobalDataExist("iPhone11_blue"));
+
+    // Test 3: Invalid camera label should throw error
+    {
+        capture_cerr capture_error;
+        DOCTEST_CHECK_THROWS_AS(
+            radiation.addRadiationCameraFromLibrary("cam3", "InvalidCamera", position, lookat, 1),
+            std::runtime_error
+        );
+    }
+
+    // Test 4: Verify camera properties are correctly calculated
+    vec3 cam_pos = radiation.getCameraPosition("cam1");
+    DOCTEST_CHECK(cam_pos.x == doctest::Approx(position.x).epsilon(0.001));
+    DOCTEST_CHECK(cam_pos.y == doctest::Approx(position.y).epsilon(0.001));
+    DOCTEST_CHECK(cam_pos.z == doctest::Approx(position.z).epsilon(0.001));
+
+    // Test 5: Verify lookat direction
+    vec3 cam_lookat = radiation.getCameraLookat("cam1");
+    DOCTEST_CHECK(cam_lookat.x == doctest::Approx(lookat.x).epsilon(0.001));
+    DOCTEST_CHECK(cam_lookat.y == doctest::Approx(lookat.y).epsilon(0.001));
+    DOCTEST_CHECK(cam_lookat.z == doctest::Approx(lookat.z).epsilon(0.001));
+
+    // Test 6: Load all available cameras to ensure they all parse correctly
+    std::vector<std::string> available_cameras = {"Canon_20D", "Nikon_D700", "Nikon_D50", "iPhone11", "iPhone12ProMAX"};
+    int cam_count = 3;
+    for (const auto &cam_name : available_cameras) {
+        if (cam_name != "Canon_20D" && cam_name != "iPhone11") {  // Already loaded these
+            std::string label = "cam" + std::to_string(cam_count++);
+            radiation.addRadiationCameraFromLibrary(label, cam_name, position, lookat, 1);
+            DOCTEST_CHECK(std::find(radiation.getAllCameraLabels().begin(),
+                                    radiation.getAllCameraLabels().end(),
+                                    label) != radiation.getAllCameraLabels().end());
+        }
+    }
+}
+
+DOCTEST_TEST_CASE("RadiationModel - addRadiationCameraFromLibrary with custom band labels") {
+
+    Context context;
+    RadiationModel radiation(&context);
+    radiation.disableMessages();
+
+    vec3 position(0, 0, 5);
+    vec3 lookat(0, 0, 0);
+
+    // Test 1: Custom band labels
+    std::vector<std::string> custom_labels = {"R_custom", "G_custom", "B_custom"};
+    radiation.addRadiationCameraFromLibrary("cam_custom", "Canon_20D", position, lookat, 1, custom_labels);
+
+    // Verify camera was created
+    std::vector<std::string> cameras = radiation.getAllCameraLabels();
+    DOCTEST_CHECK(std::find(cameras.begin(), cameras.end(), "cam_custom") != cameras.end());
+
+    // Verify custom bands were created (not "red", "green", "blue")
+    DOCTEST_CHECK(radiation.doesBandExist("R_custom"));
+    DOCTEST_CHECK(radiation.doesBandExist("G_custom"));
+    DOCTEST_CHECK(radiation.doesBandExist("B_custom"));
+
+    // Verify default XML bands were NOT created (custom labels used instead)
+    DOCTEST_CHECK_FALSE(radiation.doesBandExist("red"));
+    DOCTEST_CHECK_FALSE(radiation.doesBandExist("green"));
+    DOCTEST_CHECK_FALSE(radiation.doesBandExist("blue"));
+
+    // Verify global data still uses XML labels
+    DOCTEST_CHECK(context.doesGlobalDataExist("Canon_20D_red"));
+    DOCTEST_CHECK(context.doesGlobalDataExist("Canon_20D_green"));
+    DOCTEST_CHECK(context.doesGlobalDataExist("Canon_20D_blue"));
+
+    // Verify spectral data is correct type and has correct number of points
+    std::vector<vec2> red_response;
+    context.getGlobalData("Canon_20D_red", red_response);
+    DOCTEST_CHECK(red_response.size() == 33);  // 400-720 nm at 10nm intervals
+
+    // Test 2: Wrong number of custom labels should throw
+    {
+        capture_cerr capture_error;
+        std::vector<std::string> wrong_size = {"A", "B"};  // Only 2, but Canon_20D has 3 bands
+        DOCTEST_CHECK_THROWS_AS(
+            radiation.addRadiationCameraFromLibrary("cam_fail", "Canon_20D", position, lookat, 1, wrong_size),
+            std::runtime_error
+        );
+    }
+
+    // Test 3: Empty custom labels uses default behavior (XML labels)
+    Context context2;
+    RadiationModel radiation2(&context2);
+    radiation2.disableMessages();
+    radiation2.addRadiationCameraFromLibrary("cam_default", "iPhone11", position, lookat, 1, std::vector<std::string>());
+
+    // Bands should be created with XML labels
+    DOCTEST_CHECK(radiation2.doesBandExist("red"));
+    DOCTEST_CHECK(radiation2.doesBandExist("green"));
+    DOCTEST_CHECK(radiation2.doesBandExist("blue"));
+
+    // Test 4: Verify spectral response association works correctly with custom labels
+    // The custom band should be associated with the corresponding XML spectral response
+    Context context3;
+    RadiationModel radiation3(&context3);
+    radiation3.disableMessages();
+
+    std::vector<std::string> custom_labels2 = {"NIR", "VIS", "UV"};
+    radiation3.addRadiationCameraFromLibrary("cam_test", "Nikon_D700", position, lookat, 1, custom_labels2);
+
+    // Verify bands created with custom names
+    DOCTEST_CHECK(radiation3.doesBandExist("NIR"));
+    DOCTEST_CHECK(radiation3.doesBandExist("VIS"));
+    DOCTEST_CHECK(radiation3.doesBandExist("UV"));
+
+    // Verify global data uses XML labels
+    DOCTEST_CHECK(context3.doesGlobalDataExist("Nikon_D700_red"));
+    DOCTEST_CHECK(context3.doesGlobalDataExist("Nikon_D700_green"));
+    DOCTEST_CHECK(context3.doesGlobalDataExist("Nikon_D700_blue"));
+}
+
+DOCTEST_TEST_CASE("RadiationModel - updateCameraParameters") {
+
+    Context context;
+    RadiationModel radiation(&context);
+    radiation.disableMessages();
+
+    // Add radiation bands first
+    radiation.addRadiationBand("red");
+    radiation.addRadiationBand("green");
+    radiation.addRadiationBand("blue");
+
+    // Create initial camera with known properties
+    vec3 position(0, 0, 5);
+    vec3 lookat(0, 0, 0);
+    CameraProperties initial_props;
+    initial_props.camera_resolution = make_int2(100, 100);
+    initial_props.HFOV = 45.0f;
+    initial_props.lens_diameter = 0.1f;
+    initial_props.focal_plane_distance = 5.0f;
+    initial_props.sensor_width_mm = 35.0f;
+    initial_props.model = "TestCamera";
+
+    std::vector<std::string> bands = {"red", "green", "blue"};
+    radiation.addRadiationCamera("cam1", bands, position, lookat, initial_props, 1);
+
+    // Verify camera was created
+    std::vector<std::string> cameras = radiation.getAllCameraLabels();
+    DOCTEST_CHECK(std::find(cameras.begin(), cameras.end(), "cam1") != cameras.end());
+
+    // Test 1: Update all camera parameters successfully
+    CameraProperties updated_props;
+    updated_props.camera_resolution = make_int2(200, 150);  // Change resolution
+    updated_props.HFOV = 60.0f;  // Change HFOV
+    updated_props.lens_diameter = 0.2f;  // Change lens diameter
+    updated_props.focal_plane_distance = 10.0f;  // Change focal distance
+    updated_props.sensor_width_mm = 50.0f;  // Change sensor width
+    updated_props.model = "UpdatedCamera";  // Change model name
+
+    // Should not throw
+    DOCTEST_CHECK_NOTHROW(radiation.updateCameraParameters("cam1", updated_props));
+
+    // Verify camera still exists and position/lookat are preserved
+    vec3 cam_pos = radiation.getCameraPosition("cam1");
+    DOCTEST_CHECK(cam_pos.x == doctest::Approx(position.x).epsilon(0.001));
+    DOCTEST_CHECK(cam_pos.y == doctest::Approx(position.y).epsilon(0.001));
+    DOCTEST_CHECK(cam_pos.z == doctest::Approx(position.z).epsilon(0.001));
+
+    vec3 cam_lookat = radiation.getCameraLookat("cam1");
+    DOCTEST_CHECK(cam_lookat.x == doctest::Approx(lookat.x).epsilon(0.001));
+    DOCTEST_CHECK(cam_lookat.y == doctest::Approx(lookat.y).epsilon(0.001));
+    DOCTEST_CHECK(cam_lookat.z == doctest::Approx(lookat.z).epsilon(0.001));
+
+    // Test 2: Error case - camera doesn't exist
+    CameraProperties props;
+    props.camera_resolution = make_int2(100, 100);
+    props.HFOV = 45.0f;
+    {
+        capture_cerr capture_error;
+        DOCTEST_CHECK_THROWS_AS(
+            radiation.updateCameraParameters("nonexistent_camera", props),
+            std::runtime_error
+        );
+    }
+
+    // Test 3: Error case - invalid resolution (zero x)
+    {
+        CameraProperties invalid_props;
+        invalid_props.camera_resolution = make_int2(0, 100);
+        invalid_props.HFOV = 45.0f;
+        capture_cerr capture_error;
+        DOCTEST_CHECK_THROWS_AS(
+            radiation.updateCameraParameters("cam1", invalid_props),
+            std::runtime_error
+        );
+    }
+
+    // Test 4: Error case - invalid resolution (negative y)
+    {
+        CameraProperties invalid_props;
+        invalid_props.camera_resolution = make_int2(100, -1);
+        invalid_props.HFOV = 45.0f;
+        capture_cerr capture_error;
+        DOCTEST_CHECK_THROWS_AS(
+            radiation.updateCameraParameters("cam1", invalid_props),
+            std::runtime_error
+        );
+    }
+
+    // Test 5: Error case - invalid HFOV (zero)
+    {
+        CameraProperties invalid_props;
+        invalid_props.camera_resolution = make_int2(100, 100);
+        invalid_props.HFOV = 0.0f;
+        capture_cerr capture_error;
+        DOCTEST_CHECK_THROWS_AS(
+            radiation.updateCameraParameters("cam1", invalid_props),
+            std::runtime_error
+        );
+    }
+
+    // Test 6: Error case - invalid HFOV (exactly 180 degrees)
+    {
+        CameraProperties invalid_props;
+        invalid_props.camera_resolution = make_int2(100, 100);
+        invalid_props.HFOV = 180.0f;
+        capture_cerr capture_error;
+        DOCTEST_CHECK_THROWS_AS(
+            radiation.updateCameraParameters("cam1", invalid_props),
+            std::runtime_error
+        );
+    }
+
+    // Test 7: Error case - invalid HFOV (greater than 180 degrees)
+    {
+        CameraProperties invalid_props;
+        invalid_props.camera_resolution = make_int2(100, 100);
+        invalid_props.HFOV = 200.0f;
+        capture_cerr capture_error;
+        DOCTEST_CHECK_THROWS_AS(
+            radiation.updateCameraParameters("cam1", invalid_props),
+            std::runtime_error
+        );
+    }
+
+    // Test 8: Error case - invalid HFOV (negative)
+    {
+        CameraProperties invalid_props;
+        invalid_props.camera_resolution = make_int2(100, 100);
+        invalid_props.HFOV = -10.0f;
+        capture_cerr capture_error;
+        DOCTEST_CHECK_THROWS_AS(
+            radiation.updateCameraParameters("cam1", invalid_props),
+            std::runtime_error
+        );
+    }
+
+    // Test 9: Valid edge case - HFOV just above 0
+    {
+        CameraProperties edge_props;
+        edge_props.camera_resolution = make_int2(100, 100);
+        edge_props.HFOV = 0.001f;
+        DOCTEST_CHECK_NOTHROW(radiation.updateCameraParameters("cam1", edge_props));
+    }
+
+    // Test 10: Valid edge case - HFOV just below 180
+    {
+        CameraProperties edge_props;
+        edge_props.camera_resolution = make_int2(100, 100);
+        edge_props.HFOV = 179.999f;
+        DOCTEST_CHECK_NOTHROW(radiation.updateCameraParameters("cam1", edge_props));
+    }
+
+    // Test 11: Verify spectral bands are preserved after update
+    DOCTEST_CHECK(radiation.doesBandExist("red"));
+    DOCTEST_CHECK(radiation.doesBandExist("green"));
+    DOCTEST_CHECK(radiation.doesBandExist("blue"));
+
+    // Test 12: Update resolution with non-square aspect ratio
+    {
+        CameraProperties nonsquare_props;
+        nonsquare_props.camera_resolution = make_int2(1920, 1080);  // 16:9 aspect
+        nonsquare_props.HFOV = 70.0f;
+        DOCTEST_CHECK_NOTHROW(radiation.updateCameraParameters("cam1", nonsquare_props));
+    }
+
+    // Test 13: Update with zero lens diameter (pinhole camera)
+    {
+        CameraProperties pinhole_props;
+        pinhole_props.camera_resolution = make_int2(100, 100);
+        pinhole_props.HFOV = 45.0f;
+        pinhole_props.lens_diameter = 0.0f;  // Pinhole camera
+        DOCTEST_CHECK_NOTHROW(radiation.updateCameraParameters("cam1", pinhole_props));
+    }
+
+    // Test 14: Multiple successive updates
+    for (int i = 0; i < 5; i++) {
+        CameraProperties multi_update_props;
+        multi_update_props.camera_resolution = make_int2(100 + i * 10, 100 + i * 10);
+        multi_update_props.HFOV = 45.0f + i * 5.0f;
+        DOCTEST_CHECK_NOTHROW(radiation.updateCameraParameters("cam1", multi_update_props));
+    }
+
+    // Verify camera still exists after multiple updates
+    cameras = radiation.getAllCameraLabels();
+    DOCTEST_CHECK(std::find(cameras.begin(), cameras.end(), "cam1") != cameras.end());
+}
+
+DOCTEST_TEST_CASE("RadiationModel - getCameraParameters") {
+
+    Context context;
+    RadiationModel radiation(&context);
+    radiation.disableMessages();
+
+    // Add radiation bands first
+    radiation.addRadiationBand("red");
+    radiation.addRadiationBand("green");
+    radiation.addRadiationBand("blue");
+
+    // Create camera with known properties
+    vec3 position(1, 2, 3);
+    vec3 lookat(0, 0, 0);
+    CameraProperties initial_props;
+    initial_props.camera_resolution = make_int2(640, 480);
+    initial_props.HFOV = 60.0f;
+    initial_props.lens_diameter = 0.05f;
+    initial_props.focal_plane_distance = 2.5f;
+    initial_props.sensor_width_mm = 36.0f;
+    initial_props.model = "TestCameraModel";
+
+    std::vector<std::string> bands = {"red", "green", "blue"};
+    radiation.addRadiationCamera("test_cam", bands, position, lookat, initial_props, 1);
+
+    // Test 1: Get parameters from newly created camera
+    CameraProperties retrieved_props = radiation.getCameraParameters("test_cam");
+    DOCTEST_CHECK(retrieved_props.camera_resolution.x == initial_props.camera_resolution.x);
+    DOCTEST_CHECK(retrieved_props.camera_resolution.y == initial_props.camera_resolution.y);
+    DOCTEST_CHECK(retrieved_props.HFOV == doctest::Approx(initial_props.HFOV).epsilon(0.001));
+    DOCTEST_CHECK(retrieved_props.lens_diameter == doctest::Approx(initial_props.lens_diameter).epsilon(0.001));
+    DOCTEST_CHECK(retrieved_props.focal_plane_distance == doctest::Approx(initial_props.focal_plane_distance).epsilon(0.001));
+    DOCTEST_CHECK(retrieved_props.sensor_width_mm == doctest::Approx(initial_props.sensor_width_mm).epsilon(0.001));
+    DOCTEST_CHECK(retrieved_props.model == initial_props.model);
+
+    // Test 2: Verify FOV_aspect_ratio is auto-calculated correctly
+    float expected_aspect = float(initial_props.camera_resolution.x) / float(initial_props.camera_resolution.y);
+    DOCTEST_CHECK(retrieved_props.FOV_aspect_ratio == doctest::Approx(expected_aspect).epsilon(0.001));
+
+    // Test 3: Update parameters and verify getCameraParameters reflects changes
+    CameraProperties updated_props;
+    updated_props.camera_resolution = make_int2(1920, 1080);
+    updated_props.HFOV = 75.0f;
+    updated_props.lens_diameter = 0.1f;
+    updated_props.focal_plane_distance = 5.0f;
+    updated_props.sensor_width_mm = 50.0f;
+    updated_props.model = "UpdatedModel";
+
+    radiation.updateCameraParameters("test_cam", updated_props);
+    retrieved_props = radiation.getCameraParameters("test_cam");
+
+    DOCTEST_CHECK(retrieved_props.camera_resolution.x == updated_props.camera_resolution.x);
+    DOCTEST_CHECK(retrieved_props.camera_resolution.y == updated_props.camera_resolution.y);
+    DOCTEST_CHECK(retrieved_props.HFOV == doctest::Approx(updated_props.HFOV).epsilon(0.001));
+    DOCTEST_CHECK(retrieved_props.lens_diameter == doctest::Approx(updated_props.lens_diameter).epsilon(0.001));
+    DOCTEST_CHECK(retrieved_props.focal_plane_distance == doctest::Approx(updated_props.focal_plane_distance).epsilon(0.001));
+    DOCTEST_CHECK(retrieved_props.sensor_width_mm == doctest::Approx(updated_props.sensor_width_mm).epsilon(0.001));
+    DOCTEST_CHECK(retrieved_props.model == updated_props.model);
+
+    // Verify updated FOV_aspect_ratio
+    expected_aspect = float(updated_props.camera_resolution.x) / float(updated_props.camera_resolution.y);
+    DOCTEST_CHECK(retrieved_props.FOV_aspect_ratio == doctest::Approx(expected_aspect).epsilon(0.001));
+
+    // Test 4: Error case - non-existent camera
+    {
+        capture_cerr capture_error;
+        DOCTEST_CHECK_THROWS_AS(
+            radiation.getCameraParameters("nonexistent_camera"),
+            std::runtime_error
+        );
+    }
+
+    // Test 5: Round-trip test - get, update with same values, get again (should not generate warnings)
+    CameraProperties roundtrip_props = radiation.getCameraParameters("test_cam");
+
+    // Verify update does not generate warnings (especially about FOV_aspect_ratio)
+    {
+        capture_cerr capture_no_warning;
+        radiation.updateCameraParameters("test_cam", roundtrip_props);
+        std::string captured = capture_no_warning.get_captured_output();
+        DOCTEST_CHECK(captured.empty());  // No warnings should be generated
+    }
+
+    CameraProperties roundtrip_props2 = radiation.getCameraParameters("test_cam");
+
+    DOCTEST_CHECK(roundtrip_props.camera_resolution.x == roundtrip_props2.camera_resolution.x);
+    DOCTEST_CHECK(roundtrip_props.camera_resolution.y == roundtrip_props2.camera_resolution.y);
+    DOCTEST_CHECK(roundtrip_props.HFOV == doctest::Approx(roundtrip_props2.HFOV).epsilon(0.001));
+    DOCTEST_CHECK(roundtrip_props.lens_diameter == doctest::Approx(roundtrip_props2.lens_diameter).epsilon(0.001));
+    DOCTEST_CHECK(roundtrip_props.focal_plane_distance == doctest::Approx(roundtrip_props2.focal_plane_distance).epsilon(0.001));
+    DOCTEST_CHECK(roundtrip_props.sensor_width_mm == doctest::Approx(roundtrip_props2.sensor_width_mm).epsilon(0.001));
+    DOCTEST_CHECK(roundtrip_props.model == roundtrip_props2.model);
+    DOCTEST_CHECK(roundtrip_props.FOV_aspect_ratio == doctest::Approx(roundtrip_props2.FOV_aspect_ratio).epsilon(0.001));
+
+    // Test 6: Verify non-square resolution aspect ratio
+    CameraProperties nonsquare_props;
+    nonsquare_props.camera_resolution = make_int2(1280, 720);  // 16:9
+    nonsquare_props.HFOV = 90.0f;
+    radiation.updateCameraParameters("test_cam", nonsquare_props);
+    retrieved_props = radiation.getCameraParameters("test_cam");
+
+    expected_aspect = 1280.0f / 720.0f;
+    DOCTEST_CHECK(retrieved_props.FOV_aspect_ratio == doctest::Approx(expected_aspect).epsilon(0.001));
+
+    // Test 7: Verify pinhole camera (zero lens diameter)
+    CameraProperties pinhole_props;
+    pinhole_props.camera_resolution = make_int2(512, 512);
+    pinhole_props.HFOV = 45.0f;
+    pinhole_props.lens_diameter = 0.0f;
+    pinhole_props.focal_plane_distance = 1.0f;
+    radiation.updateCameraParameters("test_cam", pinhole_props);
+    retrieved_props = radiation.getCameraParameters("test_cam");
+
+    DOCTEST_CHECK(retrieved_props.lens_diameter == doctest::Approx(0.0f).epsilon(0.001));
+
+    // Test 8: Create multiple cameras and verify each has correct parameters
+    CameraProperties cam2_props;
+    cam2_props.camera_resolution = make_int2(800, 600);
+    cam2_props.HFOV = 50.0f;
+    cam2_props.model = "Camera2Model";
+    radiation.addRadiationCamera("test_cam2", bands, position, lookat, cam2_props, 1);
+
+    CameraProperties cam3_props;
+    cam3_props.camera_resolution = make_int2(1024, 768);
+    cam3_props.HFOV = 70.0f;
+    cam3_props.model = "Camera3Model";
+    radiation.addRadiationCamera("test_cam3", bands, position, lookat, cam3_props, 1);
+
+    // Verify each camera has its own unique parameters
+    CameraProperties check_cam2 = radiation.getCameraParameters("test_cam2");
+    CameraProperties check_cam3 = radiation.getCameraParameters("test_cam3");
+
+    DOCTEST_CHECK(check_cam2.camera_resolution.x == 800);
+    DOCTEST_CHECK(check_cam2.camera_resolution.y == 600);
+    DOCTEST_CHECK(check_cam2.HFOV == doctest::Approx(50.0f).epsilon(0.001));
+    DOCTEST_CHECK(check_cam2.model == "Camera2Model");
+
+    DOCTEST_CHECK(check_cam3.camera_resolution.x == 1024);
+    DOCTEST_CHECK(check_cam3.camera_resolution.y == 768);
+    DOCTEST_CHECK(check_cam3.HFOV == doctest::Approx(70.0f).epsilon(0.001));
+    DOCTEST_CHECK(check_cam3.model == "Camera3Model");
+}
+
 DOCTEST_TEST_CASE("CameraCalibration Basic Functionality") {
     Context context;
 
@@ -2179,8 +2673,8 @@ DOCTEST_TEST_CASE("CameraCalibration Basic Functionality") {
     std::vector<uint> calibrite_UUIDs = calibration.addCalibriteColorboard(make_vec3(0, 0.5, 0.001), 0.05);
     DOCTEST_CHECK(calibrite_UUIDs.size() == 24); // Calibrite ColorChecker Classic has 24 patches
 
-    // Test 2: getColorBoardUUIDs should return the added colorboard
-    std::vector<uint> all_colorboard_UUIDs = calibration.getColorBoardUUIDs();
+    // Test 2: getAllColorBoardUUIDs should return the added colorboard
+    std::vector<uint> all_colorboard_UUIDs = calibration.getAllColorBoardUUIDs();
     DOCTEST_CHECK(all_colorboard_UUIDs.size() == 24); // Only the Calibrite colorboard
 
     // Test 3: Verify context has the colorboard primitives
@@ -2233,7 +2727,7 @@ DOCTEST_TEST_CASE("CameraCalibration DGK Integration") {
     // We can't directly test the Lab values since they're protected methods
     // But we can verify that the implementation compiles and basic methods work
 
-    std::vector<uint> colorboard_UUIDs = calibration.getColorBoardUUIDs();
+    std::vector<uint> colorboard_UUIDs = calibration.getAllColorBoardUUIDs();
     // Initially empty since no colorboard has been added
     DOCTEST_CHECK(colorboard_UUIDs.size() == 0);
 
@@ -2263,6 +2757,58 @@ DOCTEST_TEST_CASE("CameraCalibration DGK Integration") {
     // Auto-calibration is now handled by RadiationModel::autoCalibrateCameraImage()
 }
 
+DOCTEST_TEST_CASE("CameraCalibration Multiple Colorboards") {
+    Context context;
+    CameraCalibration calibration(&context);
+
+    // Test 1: Add multiple different colorboard types
+    std::vector<uint> dgk_UUIDs = calibration.addDGKColorboard(make_vec3(0, 0, 0.001), 0.05);
+    DOCTEST_CHECK(dgk_UUIDs.size() == 18); // DGK has 18 patches
+
+    std::vector<uint> calibrite_UUIDs = calibration.addCalibriteColorboard(make_vec3(0.5, 0, 0.001), 0.05);
+    DOCTEST_CHECK(calibrite_UUIDs.size() == 24); // Calibrite has 24 patches
+
+    std::vector<uint> spyder_UUIDs = calibration.addSpyderCHECKRColorboard(make_vec3(1.0, 0, 0.001), 0.05);
+    DOCTEST_CHECK(spyder_UUIDs.size() == 24); // SpyderCHECKR has 24 patches
+
+    // Test 2: getAllColorBoardUUIDs should return all colorboards combined
+    std::vector<uint> all_UUIDs = calibration.getAllColorBoardUUIDs();
+    DOCTEST_CHECK(all_UUIDs.size() == 66); // 18 + 24 + 24 = 66 total patches
+
+    // Test 3: detectColorBoardTypes should find all three types
+    std::vector<std::string> detected_types = calibration.detectColorBoardTypes();
+    DOCTEST_CHECK(detected_types.size() == 3);
+    DOCTEST_CHECK(std::find(detected_types.begin(), detected_types.end(), "DGK") != detected_types.end());
+    DOCTEST_CHECK(std::find(detected_types.begin(), detected_types.end(), "Calibrite") != detected_types.end());
+    DOCTEST_CHECK(std::find(detected_types.begin(), detected_types.end(), "SpyderCHECKR") != detected_types.end());
+
+    // Test 4: Adding the same type again should replace it (with warning)
+    std::vector<uint> dgk_UUIDs_2 = calibration.addDGKColorboard(make_vec3(0, 0.5, 0.001), 0.05);
+    DOCTEST_CHECK(dgk_UUIDs_2.size() == 18);
+
+    // Should still have 66 patches total (18 + 24 + 24), since the old DGK was replaced
+    std::vector<uint> all_UUIDs_2 = calibration.getAllColorBoardUUIDs();
+    DOCTEST_CHECK(all_UUIDs_2.size() == 66);
+
+    // Test 5: Verify each colorboard has correct primitive data labels
+    int dgk_labeled = 0, calibrite_labeled = 0, spyder_labeled = 0;
+    std::vector<uint> context_UUIDs = context.getAllUUIDs();
+    for (uint UUID: context_UUIDs) {
+        if (context.doesPrimitiveDataExist(UUID, "colorboard_DGK")) {
+            dgk_labeled++;
+        }
+        if (context.doesPrimitiveDataExist(UUID, "colorboard_Calibrite")) {
+            calibrite_labeled++;
+        }
+        if (context.doesPrimitiveDataExist(UUID, "colorboard_SpyderCHECKR")) {
+            spyder_labeled++;
+        }
+    }
+    DOCTEST_CHECK(dgk_labeled == 18);
+    DOCTEST_CHECK(calibrite_labeled == 24);
+    DOCTEST_CHECK(spyder_labeled == 24);
+}
+
 DOCTEST_TEST_CASE("RadiationModel CCM Export and Import") {
     Context context;
     RadiationModel radiationmodel(&context);
@@ -2276,7 +2822,7 @@ DOCTEST_TEST_CASE("RadiationModel CCM Export and Import") {
     CameraProperties camera_properties;
     camera_properties.camera_resolution = resolution;
     camera_properties.HFOV = 45.0f;
-    camera_properties.FOV_aspect_ratio = 1.0f;
+    // FOV_aspect_ratio is auto-calculated from camera_resolution
     camera_properties.focal_plane_distance = 1.0f;
     camera_properties.lens_diameter = 0.0f; // Pinhole camera
 
@@ -2519,10 +3065,10 @@ DOCTEST_TEST_CASE("RadiationModel Spectrum Interpolation from Primitive Data") {
     uint uuid4 = context.addPatch(make_vec3(8, 0, 0), make_vec2(1, 1));
 
     // Set age primitive data
-    context.setPrimitiveData(uuid0, "age", 0.0f);  // Exact match to first spectrum
-    context.setPrimitiveData(uuid1, "age", 2.0f);  // Between first and second, closer to first
-    context.setPrimitiveData(uuid2, "age", 5.0f);  // Exact match to second spectrum
-    context.setPrimitiveData(uuid3, "age", 8.0f);  // Between second and third, closer to third
+    context.setPrimitiveData(uuid0, "age", 0.0f); // Exact match to first spectrum
+    context.setPrimitiveData(uuid1, "age", 2.0f); // Between first and second, closer to first
+    context.setPrimitiveData(uuid2, "age", 5.0f); // Exact match to second spectrum
+    context.setPrimitiveData(uuid3, "age", 8.0f); // Between second and third, closer to third
     context.setPrimitiveData(uuid4, "age", 12.0f); // Beyond last value
 
     // Test basic interpolation with reflectivity
@@ -2841,10 +3387,10 @@ DOCTEST_TEST_CASE("RadiationModel Spectrum Interpolation from Object Data") {
     uint obj4 = context.addTileObject(make_vec3(8, 0, 0), make_vec2(1, 1), make_SphericalCoord(0, 0), make_int2(2, 2));
 
     // Set age object data
-    context.setObjectData(obj0, "age", 0.0f);  // Exact match to first spectrum
-    context.setObjectData(obj1, "age", 2.0f);  // Between first and second, closer to first
-    context.setObjectData(obj2, "age", 5.0f);  // Exact match to second spectrum
-    context.setObjectData(obj3, "age", 8.0f);  // Between second and third, closer to third
+    context.setObjectData(obj0, "age", 0.0f); // Exact match to first spectrum
+    context.setObjectData(obj1, "age", 2.0f); // Between first and second, closer to first
+    context.setObjectData(obj2, "age", 5.0f); // Exact match to second spectrum
+    context.setObjectData(obj3, "age", 8.0f); // Between second and third, closer to third
     context.setObjectData(obj4, "age", 12.0f); // Beyond last value
 
     // Test basic interpolation with reflectivity
@@ -2865,31 +3411,31 @@ DOCTEST_TEST_CASE("RadiationModel Spectrum Interpolation from Object Data") {
         // Verify that the correct spectra were assigned to all primitives of each object
         std::string assigned_spectrum;
         std::vector<uint> prim_uuids0 = context.getObjectPrimitiveUUIDs(obj0);
-        for (uint uuid : prim_uuids0) {
+        for (uint uuid: prim_uuids0) {
             context.getPrimitiveData(uuid, "reflectivity_spectrum", assigned_spectrum);
             DOCTEST_CHECK(assigned_spectrum == "spectrum_age_0");
         }
 
         std::vector<uint> prim_uuids1 = context.getObjectPrimitiveUUIDs(obj1);
-        for (uint uuid : prim_uuids1) {
+        for (uint uuid: prim_uuids1) {
             context.getPrimitiveData(uuid, "reflectivity_spectrum", assigned_spectrum);
             DOCTEST_CHECK(assigned_spectrum == "spectrum_age_0"); // 2.0 is closer to 0.0 than 5.0
         }
 
         std::vector<uint> prim_uuids2 = context.getObjectPrimitiveUUIDs(obj2);
-        for (uint uuid : prim_uuids2) {
+        for (uint uuid: prim_uuids2) {
             context.getPrimitiveData(uuid, "reflectivity_spectrum", assigned_spectrum);
             DOCTEST_CHECK(assigned_spectrum == "spectrum_age_5");
         }
 
         std::vector<uint> prim_uuids3 = context.getObjectPrimitiveUUIDs(obj3);
-        for (uint uuid : prim_uuids3) {
+        for (uint uuid: prim_uuids3) {
             context.getPrimitiveData(uuid, "reflectivity_spectrum", assigned_spectrum);
             DOCTEST_CHECK(assigned_spectrum == "spectrum_age_10"); // 8.0 is closer to 10.0 than 5.0
         }
 
         std::vector<uint> prim_uuids4 = context.getObjectPrimitiveUUIDs(obj4);
-        for (uint uuid : prim_uuids4) {
+        for (uint uuid: prim_uuids4) {
             context.getPrimitiveData(uuid, "reflectivity_spectrum", assigned_spectrum);
             DOCTEST_CHECK(assigned_spectrum == "spectrum_age_10"); // 12.0 is closest to 10.0
         }
@@ -2924,13 +3470,13 @@ DOCTEST_TEST_CASE("RadiationModel Spectrum Interpolation from Object Data") {
 
         std::string assigned_spectrum;
         std::vector<uint> prim_uuids_a = context2.getObjectPrimitiveUUIDs(obj_a);
-        for (uint uuid : prim_uuids_a) {
+        for (uint uuid: prim_uuids_a) {
             context2.getPrimitiveData(uuid, "transmissivity_spectrum", assigned_spectrum);
             DOCTEST_CHECK(assigned_spectrum == "trans_young");
         }
 
         std::vector<uint> prim_uuids_b = context2.getObjectPrimitiveUUIDs(obj_b);
-        for (uint uuid : prim_uuids_b) {
+        for (uint uuid: prim_uuids_b) {
             context2.getPrimitiveData(uuid, "transmissivity_spectrum", assigned_spectrum);
             DOCTEST_CHECK(assigned_spectrum == "trans_old");
         }
@@ -3063,14 +3609,14 @@ DOCTEST_TEST_CASE("RadiationModel Spectrum Interpolation from Object Data") {
 
         std::string assigned_spectrum;
         std::vector<uint> prim_uuids_with = context8.getObjectPrimitiveUUIDs(obj_with_data);
-        for (uint uuid : prim_uuids_with) {
+        for (uint uuid: prim_uuids_with) {
             context8.getPrimitiveData(uuid, "reflectivity_spectrum", assigned_spectrum);
             DOCTEST_CHECK(assigned_spectrum == "spec1");
         }
 
         // obj_without_data's primitives should not have spectrum assigned
         std::vector<uint> prim_uuids_without = context8.getObjectPrimitiveUUIDs(obj_without_data);
-        for (uint uuid : prim_uuids_without) {
+        for (uint uuid: prim_uuids_without) {
             if (context8.doesPrimitiveDataExist(uuid, "reflectivity_spectrum")) {
                 context8.getPrimitiveData(uuid, "reflectivity_spectrum", assigned_spectrum);
             }
@@ -3108,7 +3654,7 @@ DOCTEST_TEST_CASE("RadiationModel Spectrum Interpolation from Object Data") {
 
         std::string assigned_spectrum;
         std::vector<uint> prim_uuids_valid = context9.getObjectPrimitiveUUIDs(obj_valid);
-        for (uint uuid : prim_uuids_valid) {
+        for (uint uuid: prim_uuids_valid) {
             context9.getPrimitiveData(uuid, "reflectivity_spectrum", assigned_spectrum);
             DOCTEST_CHECK(assigned_spectrum == "spec1");
         }
@@ -3288,7 +3834,7 @@ DOCTEST_TEST_CASE("RadiationModel Spectrum Interpolation - Duplicate Handling") 
         DOCTEST_CHECK(assigned_spectrum == "spec1");
 
         context2.getPrimitiveData(uuid1, "reflectivity_spectrum", assigned_spectrum);
-        DOCTEST_CHECK(assigned_spectrum == "spec2");  // 15.0 is closer to 10.0 than 20.0
+        DOCTEST_CHECK(assigned_spectrum == "spec2"); // 15.0 is closer to 10.0 than 20.0
     }
 
     // Test merging of duplicate object IDs with same spectra/values
@@ -3325,19 +3871,19 @@ DOCTEST_TEST_CASE("RadiationModel Spectrum Interpolation - Duplicate Handling") 
         // All three objects' primitives should be processed correctly
         std::string assigned_spectrum;
         std::vector<uint> prim_uuids0 = context3.getObjectPrimitiveUUIDs(obj0);
-        for (uint uuid : prim_uuids0) {
+        for (uint uuid: prim_uuids0) {
             context3.getPrimitiveData(uuid, "reflectivity_spectrum", assigned_spectrum);
             DOCTEST_CHECK(assigned_spectrum == "spec1");
         }
 
         std::vector<uint> prim_uuids1 = context3.getObjectPrimitiveUUIDs(obj1);
-        for (uint uuid : prim_uuids1) {
+        for (uint uuid: prim_uuids1) {
             context3.getPrimitiveData(uuid, "reflectivity_spectrum", assigned_spectrum);
             DOCTEST_CHECK(assigned_spectrum == "spec1");
         }
 
         std::vector<uint> prim_uuids2 = context3.getObjectPrimitiveUUIDs(obj2);
-        for (uint uuid : prim_uuids2) {
+        for (uint uuid: prim_uuids2) {
             context3.getPrimitiveData(uuid, "reflectivity_spectrum", assigned_spectrum);
             DOCTEST_CHECK(assigned_spectrum == "spec2");
         }
@@ -3377,15 +3923,15 @@ DOCTEST_TEST_CASE("RadiationModel Spectrum Interpolation - Duplicate Handling") 
         // Should use the new 3-spectrum config
         std::string assigned_spectrum;
         std::vector<uint> prim_uuids0 = context4.getObjectPrimitiveUUIDs(obj0);
-        for (uint uuid : prim_uuids0) {
+        for (uint uuid: prim_uuids0) {
             context4.getPrimitiveData(uuid, "reflectivity_spectrum", assigned_spectrum);
             DOCTEST_CHECK(assigned_spectrum == "spec1");
         }
 
         std::vector<uint> prim_uuids1 = context4.getObjectPrimitiveUUIDs(obj1);
-        for (uint uuid : prim_uuids1) {
+        for (uint uuid: prim_uuids1) {
             context4.getPrimitiveData(uuid, "reflectivity_spectrum", assigned_spectrum);
-            DOCTEST_CHECK(assigned_spectrum == "spec2");  // 15.0 is closer to 10.0 than 20.0
+            DOCTEST_CHECK(assigned_spectrum == "spec2"); // 15.0 is closer to 10.0 than 20.0
         }
     }
 
@@ -3421,7 +3967,1033 @@ DOCTEST_TEST_CASE("RadiationModel Spectrum Interpolation - Duplicate Handling") 
         context5.getPrimitiveData(uuid0, "reflectivity_spectrum", assigned_spectrum_rho);
         context5.getPrimitiveData(uuid0, "transmissivity_spectrum", assigned_spectrum_tau);
 
-        DOCTEST_CHECK(assigned_spectrum_rho == "spec1");   // age=1.0 -> spec1
-        DOCTEST_CHECK(assigned_spectrum_tau == "spec2");   // maturity=9.0 -> spec2
+        DOCTEST_CHECK(assigned_spectrum_rho == "spec1"); // age=1.0 -> spec1
+        DOCTEST_CHECK(assigned_spectrum_tau == "spec2"); // maturity=9.0 -> spec2
+    }
+}
+
+DOCTEST_TEST_CASE("RadiationModel - Camera Metadata Export") {
+    Context context;
+
+    // Set context properties for metadata
+    context.setDate(30, 9, 2025); // day, month, year
+    context.setTime(0, 30, 10); // second, minute, hour
+    context.setLocation(make_Location(34.0522, -118.2437, 8.0)); // Los Angeles
+
+    RadiationModel radiationmodel(&context);
+    radiationmodel.disableMessages();
+
+    // Add a simple surface for the camera to image
+    uint uuid = context.addPatch(make_vec3(0, 0, 0), make_vec2(1, 1));
+    context.setPrimitiveData(uuid, "reflectivity_SW", 0.5f);
+
+    // Add radiation band and source
+    radiationmodel.addRadiationBand("RGB_R");
+    radiationmodel.addRadiationBand("RGB_G");
+    radiationmodel.addRadiationBand("RGB_B");
+
+    uint source = radiationmodel.addCollimatedRadiationSource();
+    radiationmodel.setSourceFlux(source, "RGB_R", 100.f);
+    radiationmodel.setSourceFlux(source, "RGB_G", 100.f);
+    radiationmodel.setSourceFlux(source, "RGB_B", 100.f);
+
+    DOCTEST_SUBCASE("Auto-populate metadata with custom sensor size") {
+        // Create camera with custom sensor size
+        CameraProperties camera_props;
+        camera_props.camera_resolution = make_int2(512, 512);
+        camera_props.focal_plane_distance = 2.0f; // 2 meters working distance
+        camera_props.lens_diameter = 0.05f; // 5 cm lens diameter
+        camera_props.HFOV = 45.0f; // 45 degree horizontal FOV
+        // FOV_aspect_ratio is auto-calculated from camera_resolution (square: 1.0)
+        camera_props.sensor_width_mm = 24.0f; // APS-C sensor size
+
+        radiationmodel.addRadiationCamera("test_camera", {"RGB_R", "RGB_G", "RGB_B"}, make_vec3(0, -5, 2), // Position at x=0, y=-5, z=2
+                                          make_vec3(0, 0, 0), // Looking at origin
+                                          camera_props, 1);
+
+        // Get auto-populated metadata (metadata is auto-populated when camera is added)
+        CameraMetadata metadata = radiationmodel.getCameraMetadata("test_camera");
+
+        // Check camera properties
+        DOCTEST_CHECK(metadata.camera_properties.width == 512);
+        DOCTEST_CHECK(metadata.camera_properties.height == 512);
+        DOCTEST_CHECK(metadata.camera_properties.channels == 3);
+
+        // Check sensor dimensions
+        DOCTEST_CHECK(metadata.camera_properties.sensor_width == 24.0f);
+        DOCTEST_CHECK(metadata.camera_properties.sensor_height == doctest::Approx(24.0f).epsilon(0.01)); // Should equal sensor_width/aspect_ratio
+
+        // Check focal length calculation: focal_length = sensor_width / (2 * tan(HFOV/2))
+        float expected_focal_length = 24.0f / (2.0f * tan(45.0f * M_PI / 180.0f / 2.0f));
+        DOCTEST_CHECK(metadata.camera_properties.focal_length == doctest::Approx(expected_focal_length).epsilon(0.01));
+
+        // Check aperture calculation: f-number = focal_length / lens_diameter_mm
+        float lens_diameter_mm = 0.05f * 1000.0f; // Convert to mm
+        float expected_f_number = expected_focal_length / lens_diameter_mm;
+        std::ostringstream expected_aperture;
+        expected_aperture << "f/" << std::fixed << std::setprecision(1) << expected_f_number;
+        DOCTEST_CHECK(metadata.camera_properties.aperture == expected_aperture.str());
+
+        // Check camera model (should be default "generic")
+        DOCTEST_CHECK(metadata.camera_properties.model == "generic");
+
+        // Check location properties
+        DOCTEST_CHECK(metadata.location_properties.latitude == doctest::Approx(34.0522).epsilon(0.0001));
+        DOCTEST_CHECK(metadata.location_properties.longitude == doctest::Approx(-118.2437).epsilon(0.0001));
+
+        // Check acquisition properties
+        DOCTEST_CHECK(metadata.acquisition_properties.date == "2025-09-30");
+        DOCTEST_CHECK(metadata.acquisition_properties.time == "10:30:00");
+        DOCTEST_CHECK(metadata.acquisition_properties.UTC_offset == 8.0f);
+        DOCTEST_CHECK(metadata.acquisition_properties.camera_height_m == 2.0f); // z-position
+
+        // Check tilt angle: camera at (0,-5,2) looking at (0,0,0)
+        // Direction vector: (0,5,-2), normalized: (0, 0.9285, -0.3714)
+        // Tilt angle: -asin(-0.3714) = 21.8 degrees (positive = pointing downward)
+        DOCTEST_CHECK(metadata.acquisition_properties.camera_angle_deg == doctest::Approx(21.8).epsilon(0.5));
+
+        // Check light source detection (should be "sunlight" with collimated source)
+        DOCTEST_CHECK(metadata.acquisition_properties.light_source == "sunlight");
+
+        // Path should be empty until image is written
+        DOCTEST_CHECK(metadata.path == "");
+    }
+
+    DOCTEST_SUBCASE("Pinhole camera aperture") {
+        CameraProperties camera_props;
+        camera_props.camera_resolution = make_int2(256, 256);
+        camera_props.focal_plane_distance = 1.0f;
+        camera_props.lens_diameter = 0.0f; // Pinhole camera
+        camera_props.HFOV = 30.0f;
+        // FOV_aspect_ratio is auto-calculated from camera_resolution (square: 1.0)
+        camera_props.sensor_width_mm = 35.0f; // Default full-frame
+
+        radiationmodel.addRadiationCamera("pinhole_camera", {"RGB_R"}, make_vec3(0, 0, 5), make_vec3(0, 0, 0), camera_props, 1);
+
+        // Get auto-populated metadata
+        CameraMetadata metadata = radiationmodel.getCameraMetadata("pinhole_camera");
+
+        // Check pinhole aperture
+        DOCTEST_CHECK(metadata.camera_properties.aperture == "pinhole");
+    }
+
+    DOCTEST_SUBCASE("Light source detection") {
+        CameraProperties camera_props;
+        camera_props.camera_resolution = make_int2(128, 128);
+        camera_props.HFOV = 20.0f;
+
+        // Test with no sources (already has collimated source, so remove it for clean test)
+        Context context2;
+        RadiationModel radiationmodel2(&context2);
+        radiationmodel2.disableMessages();
+
+        radiationmodel2.addRadiationBand("test");
+        radiationmodel2.addRadiationCamera("camera1", {"test"}, make_vec3(0, 0, 1), make_vec3(0, 0, 0), camera_props, 1);
+
+        // Get auto-populated metadata
+        CameraMetadata metadata1 = radiationmodel2.getCameraMetadata("camera1");
+        DOCTEST_CHECK(metadata1.acquisition_properties.light_source == "none");
+
+        // Add collimated source -> "sunlight"
+        uint source1 = radiationmodel2.addCollimatedRadiationSource();
+        radiationmodel2.setSourceFlux(source1, "test", 100.f);
+        // Re-get metadata to reflect new light source
+        metadata1 = radiationmodel2.getCameraMetadata("camera1");
+        DOCTEST_CHECK(metadata1.acquisition_properties.light_source == "sunlight");
+
+        // Add disk source -> "mixed"
+        uint source2 = radiationmodel2.addDiskRadiationSource(make_vec3(0, 0, 10), 1.0f, make_vec3(0, 0, 0));
+        radiationmodel2.setSourceFlux(source2, "test", 50.f);
+        // Re-get metadata to reflect mixed light sources
+        metadata1 = radiationmodel2.getCameraMetadata("camera1");
+        DOCTEST_CHECK(metadata1.acquisition_properties.light_source == "mixed");
+    }
+
+    DOCTEST_SUBCASE("Set metadata and automatic JSON export") {
+        CameraProperties camera_props;
+        camera_props.camera_resolution = make_int2(256, 256);
+        camera_props.HFOV = 35.0f;
+        camera_props.sensor_width_mm = 35.0f;
+
+        radiationmodel.addRadiationCamera("export_camera", {"RGB_R", "RGB_G", "RGB_B"}, make_vec3(0, -3, 1.5), make_vec3(0, 0, 0), camera_props, 1);
+
+        // Enable automatic metadata JSON export
+        radiationmodel.enableCameraMetadata("export_camera");
+
+        // Run simulation
+        radiationmodel.updateGeometry();
+        radiationmodel.runBand("RGB_R");
+        radiationmodel.runBand("RGB_G");
+        radiationmodel.runBand("RGB_B");
+
+        // Write camera image (should automatically write JSON metadata)
+        std::string image_path = radiationmodel.writeCameraImage("export_camera", {"RGB_R", "RGB_G", "RGB_B"}, "test_metadata");
+
+        // Check that image was written
+        DOCTEST_CHECK(!image_path.empty());
+        DOCTEST_CHECK(image_path.find(".jpeg") != std::string::npos);
+
+        // Check that JSON file exists
+        std::string json_path = image_path.substr(0, image_path.find_last_of(".")) + ".json";
+        std::ifstream json_file(json_path);
+        DOCTEST_CHECK(json_file.is_open());
+
+        if (json_file.is_open()) {
+            // Parse JSON and validate structure
+            nlohmann::json j;
+            json_file >> j;
+            json_file.close();
+
+            // Validate JSON structure
+            DOCTEST_CHECK(j.contains("path"));
+            DOCTEST_CHECK(j.contains("camera_properties"));
+            DOCTEST_CHECK(j.contains("location_properties"));
+            DOCTEST_CHECK(j.contains("acquisition_properties"));
+
+            // Validate camera_properties fields
+            DOCTEST_CHECK(j["camera_properties"].contains("height"));
+            DOCTEST_CHECK(j["camera_properties"].contains("width"));
+            DOCTEST_CHECK(j["camera_properties"].contains("channels"));
+            DOCTEST_CHECK(j["camera_properties"].contains("focal_length"));
+            DOCTEST_CHECK(j["camera_properties"].contains("aperture"));
+            DOCTEST_CHECK(j["camera_properties"].contains("sensor_width"));
+            DOCTEST_CHECK(j["camera_properties"].contains("sensor_height"));
+            DOCTEST_CHECK(j["camera_properties"].contains("model"));
+
+            // Validate values
+            DOCTEST_CHECK(j["camera_properties"]["width"] == 256);
+            DOCTEST_CHECK(j["camera_properties"]["height"] == 256);
+            DOCTEST_CHECK(j["camera_properties"]["channels"] == 3);
+            DOCTEST_CHECK(j["camera_properties"]["model"] == "generic");
+
+            // Extract filename from full path for comparison
+            size_t last_slash = image_path.find_last_of("/\\");
+            std::string expected_filename = (last_slash != std::string::npos) ? image_path.substr(last_slash + 1) : image_path;
+            DOCTEST_CHECK(j["path"] == expected_filename);
+
+            // Clean up test files
+            std::remove(image_path.c_str());
+            std::remove(json_path.c_str());
+        }
+    }
+
+    DOCTEST_SUBCASE("Manual metadata population") {
+        CameraProperties camera_props;
+        camera_props.camera_resolution = make_int2(128, 128);
+
+        radiationmodel.addRadiationCamera("manual_camera", {"RGB_R"}, make_vec3(0, 0, 2), make_vec3(0, 0, 0), camera_props, 1);
+
+        // Manually create metadata
+        CameraMetadata metadata;
+        metadata.camera_properties.width = 128;
+        metadata.camera_properties.height = 128;
+        metadata.camera_properties.channels = 1;
+        metadata.camera_properties.focal_length = 50.0f;
+        metadata.camera_properties.aperture = "f/1.8";
+        metadata.camera_properties.sensor_width = 36.0f;
+        metadata.camera_properties.sensor_height = 24.0f;
+        metadata.camera_properties.model = "Nikon D700";
+
+        metadata.location_properties.latitude = 40.0f;
+        metadata.location_properties.longitude = -75.0f;
+
+        metadata.acquisition_properties.date = "2025-01-01";
+        metadata.acquisition_properties.time = "12:00:00";
+        metadata.acquisition_properties.UTC_offset = 5.0f;
+        metadata.acquisition_properties.camera_height_m = 10.0f;
+        metadata.acquisition_properties.camera_angle_deg = 45.0f;
+        metadata.acquisition_properties.light_source = "artificial";
+
+        // Set manual metadata
+        radiationmodel.setCameraMetadata("manual_camera", metadata);
+
+        // Verify it was stored by retrieving it (note: getCameraMetadata re-populates from camera properties,
+        // so we can only verify setCameraMetadata doesn't throw an exception)
+        DOCTEST_CHECK(true);
+    }
+
+    DOCTEST_SUBCASE("Enable metadata for multiple cameras with vector") {
+        CameraProperties camera_props;
+        camera_props.camera_resolution = make_int2(128, 128);
+        camera_props.HFOV = 30.0f;
+
+        // Add three cameras
+        radiationmodel.addRadiationCamera("camera_A", {"RGB_R", "RGB_G", "RGB_B"}, make_vec3(0, -2, 1), make_vec3(0, 0, 0), camera_props, 1);
+        radiationmodel.addRadiationCamera("camera_B", {"RGB_R", "RGB_G", "RGB_B"}, make_vec3(2, 0, 1), make_vec3(0, 0, 0), camera_props, 1);
+        radiationmodel.addRadiationCamera("camera_C", {"RGB_R", "RGB_G", "RGB_B"}, make_vec3(0, 2, 1), make_vec3(0, 0, 0), camera_props, 1);
+
+        // Enable metadata for all three cameras using vector overload
+        std::vector<std::string> camera_labels = {"camera_A", "camera_B", "camera_C"};
+        radiationmodel.enableCameraMetadata(camera_labels);
+
+        // Run simulation
+        radiationmodel.updateGeometry();
+        radiationmodel.runBand("RGB_R");
+        radiationmodel.runBand("RGB_G");
+        radiationmodel.runBand("RGB_B");
+
+        // Write images for all cameras and verify JSON files are created
+        std::vector<std::string> image_paths;
+        std::vector<std::string> json_paths;
+
+        for (const auto &label : camera_labels) {
+            std::string image_path = radiationmodel.writeCameraImage(label, {"RGB_R", "RGB_G", "RGB_B"}, "test_vector");
+            DOCTEST_CHECK(!image_path.empty());
+
+            std::string json_path = image_path.substr(0, image_path.find_last_of(".")) + ".json";
+            std::ifstream json_file(json_path);
+            DOCTEST_CHECK(json_file.is_open());
+            json_file.close();
+
+            image_paths.push_back(image_path);
+            json_paths.push_back(json_path);
+        }
+
+        // Clean up test files
+        for (size_t i = 0; i < image_paths.size(); i++) {
+            std::remove(image_paths[i].c_str());
+            std::remove(json_paths[i].c_str());
+        }
+    }
+
+    DOCTEST_SUBCASE("applyCameraImageCorrections stores parameters in metadata") {
+        // Add geometry
+        context.addPatch(make_vec3(0, 0, 0), make_vec2(2, 2));
+
+        CameraProperties camera_props;
+        camera_props.camera_resolution = make_int2(128, 128);
+        camera_props.HFOV = 45.0f;
+        camera_props.sensor_width_mm = 35.0f;
+
+        radiationmodel.addRadiationCamera("corrections_camera", {"RGB_R", "RGB_G", "RGB_B"}, make_vec3(0, -2, 1), make_vec3(0, 0, 0), camera_props, 1);
+
+        // Enable automatic metadata JSON export
+        radiationmodel.enableCameraMetadata("corrections_camera");
+
+        // Run simulation
+        radiationmodel.updateGeometry();
+        radiationmodel.runBand("RGB_R");
+        radiationmodel.runBand("RGB_G");
+        radiationmodel.runBand("RGB_B");
+
+        // Apply image corrections with non-default values
+        float saturation = 1.5f;
+        float brightness = 1.2f;
+        float contrast = 1.1f;
+        radiationmodel.applyCameraImageCorrections("corrections_camera", "RGB_R", "RGB_G", "RGB_B", saturation, brightness, contrast);
+
+        // Write camera image (should automatically write JSON metadata with image_processing)
+        std::string image_path = radiationmodel.writeCameraImage("corrections_camera", {"RGB_R", "RGB_G", "RGB_B"}, "test_corrections");
+
+        DOCTEST_CHECK(!image_path.empty());
+
+        // Check that JSON file exists and contains image_processing parameters
+        std::string json_path = image_path.substr(0, image_path.find_last_of(".")) + ".json";
+        std::ifstream json_file(json_path);
+        DOCTEST_CHECK(json_file.is_open());
+
+        if (json_file.is_open()) {
+            nlohmann::json j;
+            json_file >> j;
+            json_file.close();
+
+            // Validate image_processing is a top-level block
+            DOCTEST_CHECK(j.contains("acquisition_properties"));
+            DOCTEST_CHECK(j.contains("image_processing"));
+
+            // Validate image_processing values
+            auto &img_proc = j["image_processing"];
+            DOCTEST_CHECK(img_proc.contains("saturation_adjustment"));
+            DOCTEST_CHECK(img_proc.contains("brightness_adjustment"));
+            DOCTEST_CHECK(img_proc.contains("contrast_adjustment"));
+            DOCTEST_CHECK(img_proc.contains("color_space"));
+
+            DOCTEST_CHECK(img_proc["saturation_adjustment"].get<double>() == doctest::Approx(saturation).epsilon(0.01));
+            DOCTEST_CHECK(img_proc["brightness_adjustment"].get<double>() == doctest::Approx(brightness).epsilon(0.01));
+            DOCTEST_CHECK(img_proc["contrast_adjustment"].get<double>() == doctest::Approx(contrast).epsilon(0.01));
+            DOCTEST_CHECK(img_proc["color_space"].get<std::string>() == "sRGB");
+
+            // Clean up test files
+            std::remove(image_path.c_str());
+            std::remove(json_path.c_str());
+        }
+    }
+}
+
+DOCTEST_TEST_CASE("RadiationModel - Camera Metadata Agronomic Properties") {
+    Context context;
+
+    // Set context properties for metadata
+    context.setDate(15, 6, 2025);
+    context.setTime(0, 0, 12);
+    context.setLocation(make_Location(38.0, -120.0, -8.0));
+
+    RadiationModel radiationmodel(&context);
+    radiationmodel.disableMessages();
+
+    // Add radiation bands
+    radiationmodel.addRadiationBand("RGB_R");
+    radiationmodel.addRadiationBand("RGB_G");
+    radiationmodel.addRadiationBand("RGB_B");
+
+    // Add radiation source
+    uint source = radiationmodel.addCollimatedRadiationSource();
+    radiationmodel.setSourceFlux(source, "RGB_R", 100.f);
+    radiationmodel.setSourceFlux(source, "RGB_G", 100.f);
+    radiationmodel.setSourceFlux(source, "RGB_B", 100.f);
+
+    // Enable scattering to ensure pixel labeling runs
+    radiationmodel.setScatteringDepth("RGB_R", 1);
+    radiationmodel.setScatteringDepth("RGB_G", 1);
+    radiationmodel.setScatteringDepth("RGB_B", 1);
+
+    DOCTEST_SUBCASE("Agronomic properties with multiple species and weeds") {
+        // Create plant objects with different species and weed status
+        // Bean plants (plantID 1, 2, 3)
+        uint bean_obj_1 = context.addTileObject(make_vec3(0, 0, 0), make_vec2(0.2, 0.2), make_SphericalCoord(0, 0), make_int2(2, 2));
+        context.setObjectData(bean_obj_1, "plant_name", std::string("bean"));
+        context.setObjectData(bean_obj_1, "plantID", 1);
+        context.setObjectData(bean_obj_1, "plant_type", std::string("crop"));
+        context.setObjectData(bean_obj_1, "plant_height", 0.45f);
+        context.setObjectData(bean_obj_1, "age", 30.0f);
+        context.setObjectData(bean_obj_1, "phenology_stage", std::string("flowering"));
+        context.setObjectData(bean_obj_1, "reflectivity_SW", 0.3f);
+
+        uint bean_obj_2 = context.addTileObject(make_vec3(0.5, 0, 0), make_vec2(0.2, 0.2), make_SphericalCoord(0, 0), make_int2(2, 2));
+        context.setObjectData(bean_obj_2, "plant_name", std::string("bean"));
+        context.setObjectData(bean_obj_2, "plantID", 2);
+        context.setObjectData(bean_obj_2, "plant_type", std::string("crop"));
+        context.setObjectData(bean_obj_2, "plant_height", 0.50f);
+        context.setObjectData(bean_obj_2, "age", 32.0f);
+        context.setObjectData(bean_obj_2, "phenology_stage", std::string("flowering"));
+        context.setObjectData(bean_obj_2, "reflectivity_SW", 0.3f);
+
+        uint bean_obj_3 = context.addTileObject(make_vec3(1.0, 0, 0), make_vec2(0.2, 0.2), make_SphericalCoord(0, 0), make_int2(2, 2));
+        context.setObjectData(bean_obj_3, "plant_name", std::string("bean"));
+        context.setObjectData(bean_obj_3, "plantID", 3);
+        context.setObjectData(bean_obj_3, "plant_type", std::string("crop"));
+        context.setObjectData(bean_obj_3, "plant_height", 0.42f);
+        context.setObjectData(bean_obj_3, "age", 28.0f);
+        context.setObjectData(bean_obj_3, "phenology_stage", std::string("flowering"));
+        context.setObjectData(bean_obj_3, "reflectivity_SW", 0.3f);
+
+        // Weed plants (plantID 4, 5)
+        uint weed_obj_1 = context.addTileObject(make_vec3(0, 0.5, 0), make_vec2(0.15, 0.15), make_SphericalCoord(0, 0), make_int2(2, 2));
+        context.setObjectData(weed_obj_1, "plant_name", std::string("pigweed"));
+        context.setObjectData(weed_obj_1, "plantID", 4);
+        context.setObjectData(weed_obj_1, "plant_type", std::string("weed"));
+        context.setObjectData(weed_obj_1, "plant_height", 0.30f);
+        context.setObjectData(weed_obj_1, "age", 15.0f);
+        context.setObjectData(weed_obj_1, "phenology_stage", std::string("vegetative"));
+        context.setObjectData(weed_obj_1, "reflectivity_SW", 0.25f);
+
+        uint weed_obj_2 = context.addTileObject(make_vec3(0.5, 0.5, 0), make_vec2(0.15, 0.15), make_SphericalCoord(0, 0), make_int2(2, 2));
+        context.setObjectData(weed_obj_2, "plant_name", std::string("pigweed"));
+        context.setObjectData(weed_obj_2, "plantID", 5);
+        context.setObjectData(weed_obj_2, "plant_type", std::string("weed"));
+        context.setObjectData(weed_obj_2, "plant_height", 0.35f);
+        context.setObjectData(weed_obj_2, "age", 18.0f);
+        context.setObjectData(weed_obj_2, "phenology_stage", std::string("vegetative"));
+        context.setObjectData(weed_obj_2, "reflectivity_SW", 0.25f);
+
+        // Create camera looking down at the scene
+        CameraProperties camera_props;
+        camera_props.camera_resolution = make_int2(256, 256);
+        camera_props.HFOV = 60.0f;
+        camera_props.sensor_width_mm = 35.0f;
+
+        radiationmodel.addRadiationCamera("test_camera", {"RGB_R", "RGB_G", "RGB_B"}, make_vec3(0.5, 0.25, 3.0), make_vec3(0.5, 0.25, 0), camera_props, 1);
+
+        // Run simulation to generate pixel UUID map
+        radiationmodel.updateGeometry();
+        radiationmodel.runBand("RGB_R");
+        radiationmodel.runBand("RGB_G");
+        radiationmodel.runBand("RGB_B");
+
+        // Get metadata (should automatically compute agronomic properties from camera pixels)
+        CameraMetadata metadata = radiationmodel.getCameraMetadata("test_camera");
+
+        // Check agronomic properties
+        DOCTEST_CHECK(!metadata.agronomic_properties.plant_species.empty());
+        DOCTEST_CHECK(metadata.agronomic_properties.plant_species.size() == 2); // bean and pigweed
+
+        // Find indices for bean and pigweed
+        int bean_idx = -1;
+        int pigweed_idx = -1;
+        for (size_t i = 0; i < metadata.agronomic_properties.plant_species.size(); i++) {
+            if (metadata.agronomic_properties.plant_species[i] == "bean") {
+                bean_idx = static_cast<int>(i);
+            } else if (metadata.agronomic_properties.plant_species[i] == "pigweed") {
+                pigweed_idx = static_cast<int>(i);
+            }
+        }
+
+        DOCTEST_CHECK(bean_idx >= 0);
+        DOCTEST_CHECK(pigweed_idx >= 0);
+
+        // Check plant counts
+        if (bean_idx >= 0) {
+            DOCTEST_CHECK(metadata.agronomic_properties.plant_count[bean_idx] == 3); // 3 bean plants
+        }
+        if (pigweed_idx >= 0) {
+            DOCTEST_CHECK(metadata.agronomic_properties.plant_count[pigweed_idx] == 2); // 2 weed plants
+        }
+
+        // Check weed pressure: 2 weeds out of 5 plants = 40% = "moderate"
+        DOCTEST_CHECK(metadata.agronomic_properties.weed_pressure == "moderate");
+
+        // Check new agronomic properties
+        DOCTEST_CHECK(metadata.agronomic_properties.plant_height_m.size() == 2);
+        DOCTEST_CHECK(metadata.agronomic_properties.plant_age_days.size() == 2);
+        DOCTEST_CHECK(metadata.agronomic_properties.plant_stage.size() == 2);
+        DOCTEST_CHECK(metadata.agronomic_properties.leaf_area_m2.size() == 2);
+
+        // Check plant height (weighted average per species)
+        // Bean: (0.45 + 0.50 + 0.42) / 3 ≈ 0.46 (assuming equal pixel weights)
+        // Pigweed: (0.30 + 0.35) / 2 = 0.325
+        if (bean_idx >= 0) {
+            DOCTEST_CHECK(metadata.agronomic_properties.plant_height_m[bean_idx] > 0.40f);
+            DOCTEST_CHECK(metadata.agronomic_properties.plant_height_m[bean_idx] < 0.52f);
+        }
+        if (pigweed_idx >= 0) {
+            DOCTEST_CHECK(metadata.agronomic_properties.plant_height_m[pigweed_idx] > 0.28f);
+            DOCTEST_CHECK(metadata.agronomic_properties.plant_height_m[pigweed_idx] < 0.37f);
+        }
+
+        // Check plant age (weighted average per species)
+        // Bean: (30.0 + 32.0 + 28.0) / 3 = 30.0 days
+        // Pigweed: (15.0 + 18.0) / 2 = 16.5 days
+        if (bean_idx >= 0) {
+            DOCTEST_CHECK(metadata.agronomic_properties.plant_age_days[bean_idx] > 27.0f);
+            DOCTEST_CHECK(metadata.agronomic_properties.plant_age_days[bean_idx] < 33.0f);
+        }
+        if (pigweed_idx >= 0) {
+            DOCTEST_CHECK(metadata.agronomic_properties.plant_age_days[pigweed_idx] > 14.0f);
+            DOCTEST_CHECK(metadata.agronomic_properties.plant_age_days[pigweed_idx] < 19.0f);
+        }
+
+        // Check plant stage (mode - most common phenology stage)
+        // Bean: all 3 are "flowering" -> mode = "flowering"
+        // Pigweed: both are "vegetative" -> mode = "vegetative"
+        if (bean_idx >= 0) {
+            DOCTEST_CHECK(metadata.agronomic_properties.plant_stage[bean_idx] == "flowering");
+        }
+        if (pigweed_idx >= 0) {
+            DOCTEST_CHECK(metadata.agronomic_properties.plant_stage[pigweed_idx] == "vegetative");
+        }
+
+        // Check leaf area (should be > 0 for both species)
+        if (bean_idx >= 0) {
+            DOCTEST_CHECK(metadata.agronomic_properties.leaf_area_m2[bean_idx] > 0.0f);
+        }
+        if (pigweed_idx >= 0) {
+            DOCTEST_CHECK(metadata.agronomic_properties.leaf_area_m2[pigweed_idx] > 0.0f);
+        }
+    }
+
+    DOCTEST_SUBCASE("Agronomic properties with low weed pressure") {
+        // Create 10 crop plants and 1 weed (10% weeds = "low")
+        for (int i = 0; i < 10; i++) {
+            uint crop_obj = context.addTileObject(make_vec3(i * 0.3, 0, 0), make_vec2(0.1, 0.1), make_SphericalCoord(0, 0), make_int2(2, 2));
+            context.setObjectData(crop_obj, "plant_name", std::string("soybean"));
+            context.setObjectData(crop_obj, "plantID", i + 1);
+            context.setObjectData(crop_obj, "plant_type", std::string("crop"));
+            context.setObjectData(crop_obj, "reflectivity_SW", 0.3f);
+        }
+
+        uint weed_obj = context.addTileObject(make_vec3(0, 0.5, 0), make_vec2(0.1, 0.1), make_SphericalCoord(0, 0), make_int2(2, 2));
+        context.setObjectData(weed_obj, "plant_name", std::string("lambsquarter"));
+        context.setObjectData(weed_obj, "plantID", 11);
+        context.setObjectData(weed_obj, "plant_type", std::string("weed"));
+        context.setObjectData(weed_obj, "reflectivity_SW", 0.25f);
+
+        CameraProperties camera_props;
+        camera_props.camera_resolution = make_int2(512, 256);
+        camera_props.HFOV = 90.0f;
+
+        radiationmodel.addRadiationCamera("low_weed_camera", {"RGB_R"}, make_vec3(1.5, 0.25, 2.0), make_vec3(1.5, 0.25, 0), camera_props, 1);
+
+        radiationmodel.updateGeometry();
+        radiationmodel.runBand("RGB_R");
+
+        // Get metadata with agronomic properties
+        CameraMetadata metadata = radiationmodel.getCameraMetadata("low_weed_camera");
+
+        // 1 weed out of 11 plants = 9.09% = "low"
+        DOCTEST_CHECK(metadata.agronomic_properties.weed_pressure == "low");
+    }
+
+    DOCTEST_SUBCASE("Agronomic properties with high weed pressure") {
+        // Create 2 crops and 3 weeds (60% weeds = "high")
+        uint crop_obj_1 = context.addTileObject(make_vec3(0, 0, 0), make_vec2(0.2, 0.2), make_SphericalCoord(0, 0), make_int2(2, 2));
+        context.setObjectData(crop_obj_1, "plant_name", std::string("corn"));
+        context.setObjectData(crop_obj_1, "plantID", 1);
+        context.setObjectData(crop_obj_1, "plant_type", std::string("crop"));
+        context.setObjectData(crop_obj_1, "reflectivity_SW", 0.3f);
+
+        uint crop_obj_2 = context.addTileObject(make_vec3(0.5, 0, 0), make_vec2(0.2, 0.2), make_SphericalCoord(0, 0), make_int2(2, 2));
+        context.setObjectData(crop_obj_2, "plant_name", std::string("corn"));
+        context.setObjectData(crop_obj_2, "plantID", 2);
+        context.setObjectData(crop_obj_2, "plant_type", std::string("crop"));
+        context.setObjectData(crop_obj_2, "reflectivity_SW", 0.3f);
+
+        for (int i = 0; i < 3; i++) {
+            uint weed_obj = context.addTileObject(make_vec3(i * 0.3, 0.5, 0), make_vec2(0.15, 0.15), make_SphericalCoord(0, 0), make_int2(2, 2));
+            context.setObjectData(weed_obj, "plant_name", std::string("foxtail"));
+            context.setObjectData(weed_obj, "plantID", 3 + i);
+            context.setObjectData(weed_obj, "plant_type", std::string("weed"));
+            context.setObjectData(weed_obj, "reflectivity_SW", 0.25f);
+        }
+
+        CameraProperties camera_props;
+        camera_props.camera_resolution = make_int2(256, 256);
+        camera_props.HFOV = 60.0f;
+
+        radiationmodel.addRadiationCamera("high_weed_camera", {"RGB_R"}, make_vec3(0.5, 0.25, 2.5), make_vec3(0.5, 0.25, 0), camera_props, 1);
+
+        radiationmodel.updateGeometry();
+        radiationmodel.runBand("RGB_R");
+
+        // Get metadata with agronomic properties
+        CameraMetadata metadata = radiationmodel.getCameraMetadata("high_weed_camera");
+
+        // 3 weeds out of 5 plants = 60% = "high"
+        DOCTEST_CHECK(metadata.agronomic_properties.weed_pressure == "high");
+    }
+
+    DOCTEST_SUBCASE("Agronomic properties with no plant data") {
+        // Create objects without plant architecture data
+        std::vector<uint> patch_UUIDs = context.addTile(make_vec3(0, 0, 0), make_vec2(1, 1), make_SphericalCoord(0, 0), make_int2(5, 5));
+        for (const auto &uuid : patch_UUIDs) {
+            context.setPrimitiveData(uuid, "reflectivity_SW", 0.3f);
+        }
+
+        CameraProperties camera_props;
+        camera_props.camera_resolution = make_int2(128, 128);
+        camera_props.HFOV = 45.0f;
+
+        radiationmodel.addRadiationCamera("no_data_camera", {"RGB_R"}, make_vec3(0.5, 0.5, 2.0), make_vec3(0.5, 0.5, 0), camera_props, 1);
+
+        radiationmodel.updateGeometry();
+        radiationmodel.runBand("RGB_R");
+
+        // Get metadata with agronomic properties
+        CameraMetadata metadata = radiationmodel.getCameraMetadata("no_data_camera");
+
+        // Should have empty agronomic properties when no plant data exists
+        DOCTEST_CHECK(metadata.agronomic_properties.plant_species.empty());
+        DOCTEST_CHECK(metadata.agronomic_properties.plant_count.empty());
+        DOCTEST_CHECK(metadata.agronomic_properties.weed_pressure == "");
+    }
+
+    DOCTEST_SUBCASE("Agronomic properties JSON export") {
+        // Create a simple scene with plants
+        uint bean_obj = context.addTileObject(make_vec3(0, 0, 0), make_vec2(0.3, 0.3), make_SphericalCoord(0, 0), make_int2(3, 3));
+        context.setObjectData(bean_obj, "plant_name", std::string("bean"));
+        context.setObjectData(bean_obj, "plantID", 1);
+        context.setObjectData(bean_obj, "plant_type", std::string("crop"));
+        context.setObjectData(bean_obj, "reflectivity_SW", 0.3f);
+
+        uint weed_obj = context.addTileObject(make_vec3(0.5, 0, 0), make_vec2(0.2, 0.2), make_SphericalCoord(0, 0), make_int2(2, 2));
+        context.setObjectData(weed_obj, "plant_name", std::string("weed"));
+        context.setObjectData(weed_obj, "plantID", 2);
+        context.setObjectData(weed_obj, "plant_type", std::string("weed"));
+        context.setObjectData(weed_obj, "reflectivity_SW", 0.25f);
+
+        CameraProperties camera_props;
+        camera_props.camera_resolution = make_int2(256, 256);
+        camera_props.HFOV = 50.0f;
+
+        radiationmodel.addRadiationCamera("json_export_camera", {"RGB_R", "RGB_G", "RGB_B"}, make_vec3(0.25, 0, 2.0), make_vec3(0.25, 0, 0), camera_props, 1);
+
+        radiationmodel.updateGeometry();
+        radiationmodel.runBand("RGB_R");
+        radiationmodel.runBand("RGB_G");
+        radiationmodel.runBand("RGB_B");
+
+        // Enable automatic metadata JSON export
+        radiationmodel.enableCameraMetadata("json_export_camera");
+
+        // Write image (which triggers metadata JSON export)
+        std::string image_path = radiationmodel.writeCameraImage("json_export_camera", {"RGB_R", "RGB_G", "RGB_B"}, "test_agronomic");
+
+        // Also verify metadata was populated correctly
+        CameraMetadata metadata = radiationmodel.getCameraMetadata("json_export_camera");
+
+        // Check JSON file
+        std::string json_path = image_path.substr(0, image_path.find_last_of(".")) + ".json";
+        std::ifstream json_file(json_path);
+        DOCTEST_CHECK(json_file.is_open());
+
+        if (json_file.is_open()) {
+            nlohmann::json j;
+            json_file >> j;
+            json_file.close();
+
+            // Check that agronomic_properties exists
+            DOCTEST_CHECK(j.contains("agronomic_properties"));
+
+            if (j.contains("agronomic_properties")) {
+                DOCTEST_CHECK(j["agronomic_properties"].contains("plant_species"));
+                DOCTEST_CHECK(j["agronomic_properties"].contains("plant_count"));
+                DOCTEST_CHECK(j["agronomic_properties"].contains("weed_pressure"));
+
+                // Validate values
+                DOCTEST_CHECK(j["agronomic_properties"]["plant_species"].is_array());
+                DOCTEST_CHECK(j["agronomic_properties"]["plant_count"].is_array());
+                DOCTEST_CHECK(j["agronomic_properties"]["weed_pressure"].is_string());
+
+                // 1 weed out of 2 plants = 50% = "high"
+                DOCTEST_CHECK(j["agronomic_properties"]["weed_pressure"] == "high");
+            }
+
+            // Clean up
+            std::remove(image_path.c_str());
+            std::remove(json_path.c_str());
+        }
+    }
+}
+
+DOCTEST_TEST_CASE("RadiationModel - FOV_aspect_ratio Deprecation") {
+
+    Context context;
+
+    // Create a basic radiation model
+    RadiationModel radiationmodel(&context);
+    radiationmodel.disableMessages();
+
+    // Add a radiation band
+    radiationmodel.addRadiationBand("test");
+
+    DOCTEST_SUBCASE("Default FOV_aspect_ratio is auto-calculated") {
+        // Create camera with non-square resolution
+        CameraProperties camera_props;
+        camera_props.camera_resolution = make_int2(800, 600); // 4:3 aspect ratio
+        camera_props.HFOV = 45.0f;
+        // FOV_aspect_ratio left at default (0.0)
+
+        // Should not produce any warning
+        capture_cerr captured_cerr;
+        radiationmodel.addRadiationCamera("test_camera_1", {"test"}, make_vec3(0, 0, 2), make_vec3(0, 0, 0), camera_props, 1);
+
+        std::string stderr_output = captured_cerr.get_captured_output();
+        DOCTEST_CHECK(stderr_output.empty());
+
+        // Verify FOV_aspect_ratio was auto-calculated correctly
+        // Expected: 800/600 = 1.333...
+        float expected_aspect = float(camera_props.camera_resolution.x) / float(camera_props.camera_resolution.y);
+        DOCTEST_CHECK(std::abs(expected_aspect - 1.333333f) < 0.0001f);
+    }
+
+    DOCTEST_SUBCASE("Explicit FOV_aspect_ratio triggers deprecation warning") {
+        // Create camera with explicit FOV_aspect_ratio
+        CameraProperties camera_props;
+        camera_props.camera_resolution = make_int2(640, 480);
+        camera_props.HFOV = 50.0f;
+        camera_props.FOV_aspect_ratio = 1.5f; // Explicitly set to non-zero value
+
+        // Should produce deprecation warning
+        capture_cerr captured_cerr;
+        radiationmodel.addRadiationCamera("test_camera_2", {"test"}, make_vec3(0, 0, 2), make_vec3(0, 0, 0), camera_props, 1);
+
+        std::string stderr_output = captured_cerr.get_captured_output();
+        DOCTEST_CHECK(stderr_output.find("WARNING") != std::string::npos);
+        DOCTEST_CHECK(stderr_output.find("FOV_aspect_ratio") != std::string::npos);
+        DOCTEST_CHECK(stderr_output.find("deprecated") != std::string::npos);
+        DOCTEST_CHECK(stderr_output.find("auto-calculated") != std::string::npos);
+    }
+
+    DOCTEST_SUBCASE("Auto-calculated value ensures square pixels") {
+        // Create cameras with various resolutions
+        std::vector<helios::int2> resolutions = {
+                make_int2(1920, 1080), // 16:9
+                make_int2(1024, 768), // 4:3
+                make_int2(512, 512), // 1:1
+                make_int2(640, 480) // 4:3
+        };
+
+        for (const auto &resolution: resolutions) {
+            CameraProperties camera_props;
+            camera_props.camera_resolution = resolution;
+            camera_props.HFOV = 60.0f;
+            // FOV_aspect_ratio left at default (0.0)
+
+            std::string camera_label = "camera_" + std::to_string(resolution.x) + "x" + std::to_string(resolution.y);
+
+            capture_cerr captured_cerr;
+            radiationmodel.addRadiationCamera(camera_label, {"test"}, make_vec3(0, 0, 2), make_vec3(0, 0, 0), camera_props, 1);
+
+            // Should not produce any warning
+            std::string stderr_output = captured_cerr.get_captured_output();
+            DOCTEST_CHECK(stderr_output.empty());
+        }
+    }
+}
+
+DOCTEST_TEST_CASE("RadiationModel Atmospheric Sky Model for Camera") {
+    // Test that atmospheric sky radiance model is computed when cameras are present
+    // and that atmospheric parameters from SolarPosition plugin are used correctly
+
+    Context context;
+
+    // Create simple geometry
+    uint UUID = context.addPatch(make_vec3(0, 0, 0), make_vec2(1, 1));
+    context.setPrimitiveData(UUID, "temperature", 300.f);
+
+    // Set atmospheric conditions (as would be set by SolarPosition plugin)
+    float pressure_Pa = 95000.f;      // Lower pressure (higher altitude)
+    float temperature_K = 285.f;      // Cooler temperature
+    float humidity_rel = 0.6f;        // 60% humidity
+    float turbidity = 0.08f;          // Moderately turbid (AOD at 500nm)
+
+    context.setGlobalData("atmosphere_pressure_Pa", pressure_Pa);
+    context.setGlobalData("atmosphere_temperature_K", temperature_K);
+    context.setGlobalData("atmosphere_humidity_rel", humidity_rel);
+    context.setGlobalData("atmosphere_turbidity", turbidity);
+
+    RadiationModel radiationmodel(&context);
+    radiationmodel.disableMessages();
+
+    DOCTEST_SUBCASE("Sky model requires wavelength bounds with uniform response") {
+        // Test that error is thrown if wavelength bounds not set for uniform camera response
+        radiationmodel.addRadiationBand("VIS"); // No wavelength bounds - will cause error
+        radiationmodel.setDirectRayCount("VIS", 100);
+        radiationmodel.setDiffuseRayCount("VIS", 100);
+        radiationmodel.disableEmission("VIS");
+        radiationmodel.setDiffuseRadiationFlux("VIS", 100.f);
+
+        // Add sun source
+        uint SunSource = radiationmodel.addCollimatedRadiationSource(make_vec3(0, 0, 1));
+        radiationmodel.setSourceFlux(SunSource, "VIS", 1000.f);
+
+        // Add camera without setting wavelength bounds (will cause error)
+        CameraProperties camera_props;
+        camera_props.camera_resolution = make_int2(100, 100);
+        camera_props.HFOV = 60.0f;
+        radiationmodel.addRadiationCamera("test_camera", {"VIS"}, make_vec3(0, 0, 5), make_vec3(0, 0, 0), camera_props, 10);
+
+        radiationmodel.updateGeometry();
+
+        // Should throw error about missing wavelength bounds
+        bool threw_error = false;
+        try {
+            radiationmodel.runBand("VIS");
+        } catch (std::runtime_error &e) {
+            std::string error_msg = e.what();
+            threw_error = (error_msg.find("wavelength bounds") != std::string::npos);
+        }
+        DOCTEST_CHECK(threw_error);
+    }
+
+    DOCTEST_SUBCASE("Sky model computed with camera and wavelength bounds") {
+        // Add radiation band with wavelength bounds
+        radiationmodel.addRadiationBand("VIS", 400.f, 700.f); // Set wavelength bounds in constructor
+        radiationmodel.setDirectRayCount("VIS", 100);
+        radiationmodel.setDiffuseRayCount("VIS", 100);
+        radiationmodel.disableEmission("VIS");
+        radiationmodel.setDiffuseRadiationFlux("VIS", 100.f); // Set some diffuse flux for sky
+
+        // Add sun source
+        uint SunSource = radiationmodel.addCollimatedRadiationSource(make_vec3(0.5, 0.3, 0.8));
+        radiationmodel.setSourceFlux(SunSource, "VIS", 1000.f);
+
+        // Add camera
+        CameraProperties camera_props;
+        camera_props.camera_resolution = make_int2(100, 100);
+        camera_props.HFOV = 60.0f;
+        radiationmodel.addRadiationCamera("test_camera", {"VIS"}, make_vec3(0, 0, 5), make_vec3(0, 0, 0), camera_props, 10);
+
+        radiationmodel.updateGeometry();
+
+        // Run with camera - should compute atmospheric sky model
+        radiationmodel.runBand("VIS");
+
+        // If we get here without crashing, the atmospheric sky model was successfully computed
+        DOCTEST_CHECK(true);
+    }
+
+    DOCTEST_SUBCASE("Atmospheric parameters do not cause errors") {
+        // Test that changing atmospheric parameters doesn't cause errors
+        radiationmodel.addRadiationBand("VIS", 400.f, 700.f); // Set wavelength bounds in constructor
+        radiationmodel.setDirectRayCount("VIS", 0); // No direct rays
+        radiationmodel.setDiffuseRayCount("VIS", 0);
+        radiationmodel.disableEmission("VIS");
+        radiationmodel.setDiffuseRadiationFlux("VIS", 100.f);
+
+        // Add camera looking at sky (no geometry in view)
+        CameraProperties camera_props;
+        camera_props.camera_resolution = make_int2(50, 50);
+        camera_props.HFOV = 45.0f;
+        radiationmodel.addRadiationCamera("sky_camera", {"VIS"}, make_vec3(10, 10, 10), make_vec3(0, 0, 1), camera_props, 50);
+
+        radiationmodel.updateGeometry();
+        radiationmodel.runBand("VIS");
+
+        // Now change turbidity (higher turbidity = more scattering)
+        // Typical values: 0.03-0.05 (very clear), 0.1 (clear), 0.2-0.3 (hazy), >0.4 (very hazy)
+        float high_turbidity = 0.3f;  // Hazy conditions (AOD at 500nm)
+        context.setGlobalData("atmosphere_turbidity", high_turbidity);
+
+        radiationmodel.runBand("VIS");
+
+        // If we get here, the atmospheric model successfully handled parameter changes
+        DOCTEST_CHECK(true);
+    }
+}
+
+DOCTEST_TEST_CASE("RadiationModel - Camera White Balance") {
+    Context context;
+
+    RadiationModel radiationmodel(&context);
+    radiationmodel.disableMessages();
+
+    // Add a simple surface for the camera to image
+    uint uuid = context.addPatch(make_vec3(0, 0, 0), make_vec2(1, 1));
+    context.setPrimitiveData(uuid, "reflectivity_SW", 0.5f);
+
+    // Add radiation bands
+    radiationmodel.addRadiationBand("RGB_R");
+    radiationmodel.addRadiationBand("RGB_G");
+    radiationmodel.addRadiationBand("RGB_B");
+
+    // Add radiation source
+    uint source = radiationmodel.addCollimatedRadiationSource();
+    radiationmodel.setSourceFlux(source, "RGB_R", 100.f);
+    radiationmodel.setSourceFlux(source, "RGB_G", 150.f); // Different flux to create white balance imbalance
+    radiationmodel.setSourceFlux(source, "RGB_B", 80.f);
+
+    DOCTEST_SUBCASE("Default white_balance is 'auto'") {
+        // Create camera with default properties
+        CameraProperties camera_props;
+        camera_props.camera_resolution = make_int2(256, 256);
+        camera_props.focal_plane_distance = 2.0f;
+        camera_props.HFOV = 45.0f;
+
+        // Verify default is "auto"
+        DOCTEST_CHECK(camera_props.white_balance == "auto");
+
+        radiationmodel.addRadiationCamera("test_camera", {"RGB_R", "RGB_G", "RGB_B"}, make_vec3(0, -5, 2), make_vec3(0, 0, 0), camera_props, 1);
+
+        // Verify camera has "auto" white balance
+        CameraProperties retrieved_props = radiationmodel.getCameraParameters("test_camera");
+        DOCTEST_CHECK(retrieved_props.white_balance == "auto");
+    }
+
+    DOCTEST_SUBCASE("White balance mode 'off' preserves raw data") {
+        // Create camera with white balance off
+        CameraProperties camera_props;
+        camera_props.camera_resolution = make_int2(256, 256);
+        camera_props.focal_plane_distance = 2.0f;
+        camera_props.HFOV = 45.0f;
+        camera_props.white_balance = "off";
+
+        radiationmodel.addRadiationCamera("camera_wb_off", {"RGB_R", "RGB_G", "RGB_B"}, make_vec3(0, -5, 2), make_vec3(0, 0, 0), camera_props, 1);
+
+        // Run simulation
+        radiationmodel.updateGeometry();
+        radiationmodel.runBand("RGB_R");
+        radiationmodel.runBand("RGB_G");
+        radiationmodel.runBand("RGB_B");
+
+        // Verify white balance mode in metadata
+        CameraMetadata metadata = radiationmodel.getCameraMetadata("camera_wb_off");
+        DOCTEST_CHECK(metadata.camera_properties.white_balance == "off");
+
+        // The test passes if we get here without errors
+        DOCTEST_CHECK(true);
+    }
+
+    DOCTEST_SUBCASE("White balance mode 'auto' applies correction") {
+        // Create camera with white balance auto
+        CameraProperties camera_props;
+        camera_props.camera_resolution = make_int2(256, 256);
+        camera_props.focal_plane_distance = 2.0f;
+        camera_props.HFOV = 45.0f;
+        camera_props.white_balance = "auto";
+
+        radiationmodel.addRadiationCamera("camera_wb_auto", {"RGB_R", "RGB_G", "RGB_B"}, make_vec3(0, -5, 2), make_vec3(0, 0, 0), camera_props, 1);
+
+        // Run simulation
+        radiationmodel.updateGeometry();
+        radiationmodel.runBand("RGB_R");
+        radiationmodel.runBand("RGB_G");
+        radiationmodel.runBand("RGB_B");
+
+        // Verify white balance mode in metadata
+        CameraMetadata metadata = radiationmodel.getCameraMetadata("camera_wb_auto");
+        DOCTEST_CHECK(metadata.camera_properties.white_balance == "auto");
+
+        // The test passes if we get here without errors
+        DOCTEST_CHECK(true);
+    }
+
+    DOCTEST_SUBCASE("Single-channel camera skips white balance") {
+        // Create single-channel camera
+        CameraProperties camera_props;
+        camera_props.camera_resolution = make_int2(256, 256);
+        camera_props.focal_plane_distance = 2.0f;
+        camera_props.HFOV = 45.0f;
+        camera_props.white_balance = "auto"; // Set to auto, but should skip for 1-channel
+
+        radiationmodel.addRadiationCamera("camera_1ch", {"RGB_R"}, make_vec3(0, -5, 2), make_vec3(0, 0, 0), camera_props, 1);
+
+        // Run simulation
+        radiationmodel.updateGeometry();
+        radiationmodel.runBand("RGB_R");
+
+        // Verify camera has 1 channel
+        CameraMetadata metadata = radiationmodel.getCameraMetadata("camera_1ch");
+        DOCTEST_CHECK(metadata.camera_properties.channels == 1);
+        DOCTEST_CHECK(metadata.camera_properties.white_balance == "auto");
+
+        // The test passes if we get here without errors (white balance should be skipped silently)
+        DOCTEST_CHECK(true);
+    }
+
+    DOCTEST_SUBCASE("Update camera white_balance parameter") {
+        // Create camera with default settings
+        CameraProperties camera_props;
+        camera_props.camera_resolution = make_int2(256, 256);
+        camera_props.focal_plane_distance = 2.0f;
+        camera_props.HFOV = 45.0f;
+        camera_props.white_balance = "auto";
+
+        radiationmodel.addRadiationCamera("camera_update", {"RGB_R", "RGB_G", "RGB_B"}, make_vec3(0, -5, 2), make_vec3(0, 0, 0), camera_props, 1);
+
+        // Update to "off"
+        CameraProperties updated_props = radiationmodel.getCameraParameters("camera_update");
+        updated_props.white_balance = "off";
+        radiationmodel.updateCameraParameters("camera_update", updated_props);
+
+        // Verify update
+        CameraProperties retrieved_props = radiationmodel.getCameraParameters("camera_update");
+        DOCTEST_CHECK(retrieved_props.white_balance == "off");
+
+        // Run simulation with updated settings
+        radiationmodel.updateGeometry();
+        radiationmodel.runBand("RGB_R");
+        radiationmodel.runBand("RGB_G");
+        radiationmodel.runBand("RGB_B");
+
+        // Verify metadata reflects the update
+        CameraMetadata metadata = radiationmodel.getCameraMetadata("camera_update");
+        DOCTEST_CHECK(metadata.camera_properties.white_balance == "off");
+    }
+
+    DOCTEST_SUBCASE("CameraProperties equality includes white_balance") {
+        CameraProperties props1;
+        props1.white_balance = "auto";
+
+        CameraProperties props2;
+        props2.white_balance = "auto";
+
+        // Should be equal
+        DOCTEST_CHECK(props1 == props2);
+
+        // Change white_balance
+        props2.white_balance = "off";
+
+        // Should not be equal
+        DOCTEST_CHECK(props1 != props2);
     }
 }

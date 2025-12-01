@@ -201,6 +201,8 @@ RT_PROGRAM void closest_hit_diffuse() {
                             atomicFloatAdd(&scatter_buff_top_cam[ind_origin], strength * t_tau_cam); // transmission
                         }
                     }
+                    // Note: Don't accumulate scattered radiation to radiation_specular
+                    // Specular should only reflect DIRECT source radiation (accumulated in miss_direct)
                 }
             }
 
@@ -303,44 +305,54 @@ RT_PROGRAM void closest_hit_camera() {
             }
 
             // specular reflection
+            // Only compute specular on iteration 0 to prevent accumulation across scattering iterations.
+            // radiation_specular contains per-source, camera-weighted incident radiation
 
             double strength_spec = 0;
-            if (specular_reflection_enabled > 0 && specular_exponent[objID] > 0.f) {
+            if (specular_reflection_enabled > 0 && specular_exponent[objID] > 0.f && scattering_iteration == 0) {
+
+                // For each source, compute specular contribution
                 for (int rr = 0; rr < Nsources; rr++) {
 
-                    // light direction
-                    float3 light_direction;
-                    float spec = 0;
-                    if (source_types[rr] == 0 || source_types[rr] == 2) { // collimated source or sunsphere source
+                    // Get camera-weighted incident radiation from this source
+                    // Already has source color and camera response weighting applied
+                    size_t ind_specular = rr * Ncameras * Nprimitives * Nbands_launch + camera_ID * Nprimitives * Nbands_launch + UUID * Nbands_launch + b;
+                    float spec = radiation_specular[ind_specular];
 
-                        light_direction = normalize(source_positions[rr]);
-                        if (face) {
-                            spec = radiation_out_top[Nbands_launch * UUID + b];
+                    // Apply default 0.25 scaling factor (typical Fresnel reflectance for dielectrics is ~4%,
+                    // but this accounts for specular lobe concentration and typical surface roughness)
+                    spec *= 0.25f;
+
+                    if (spec > 0) {
+                        // Determine light direction based on source type
+                        float3 light_direction;
+                        if (source_types[rr] == 0 || source_types[rr] == 2) {
+                            // Collimated or sunsphere: parallel rays from source direction
+                            light_direction = normalize(source_positions[rr]);
                         } else {
-                            spec = radiation_out_bottom[Nbands_launch * UUID + b];
+                            // Sphere, disk, or rectangle: direction from hit point to source center
+                            float3 hit_point = ray.origin + t_hit * ray.direction;
+                            light_direction = normalize(source_positions[rr] - hit_point);
                         }
 
-                    } else { // sphere, disk or rectangular source
-                        //\todo Need to add generic functions to sample points on sphere, disk and rectangle source surfaces
-                    }
+                        // Blinn-Phong specular direction (half-vector)
+                        float3 specular_direction = normalize(light_direction - ray.direction);
 
-                    // float3 specular_direction = normalize(2 * fabs(dot(light_direction, normal)) * normal - light_direction);
-                    float3 specular_direction = normalize(light_direction - ray.direction);
+                        float exponent = specular_exponent[objID];
+                        double scale_coefficient = 1.0;
+                        if (specular_reflection_enabled == 2) { // if we are using the scale coefficient
+                            scale_coefficient = specular_scale[objID];
+                        }
 
-                    // specular reflection
-                    float exponent = specular_exponent[objID];
-                    double scale_coefficient = 1.0;
-                    if (specular_reflection_enabled == 2) { // if we are using the scale coefficient
-                        scale_coefficient = specular_scale[objID];
+                        strength_spec += spec * scale_coefficient * pow(max(0.f, dot(specular_direction, normal)), exponent) * (exponent + 2.f) /
+                                         (double(launch_dim.x) * 2.f * M_PI); // launch_dim.x is the number of rays launched per pixel, so we divide by it to get the average flux per ray. (exponent+2)/2pi normalizes reflected distribution to unity.
                     }
-                    strength_spec += spec * scale_coefficient * pow(max(0.f, dot(specular_direction, normal)), exponent) * (exponent + 2.f) /
-                                     (double(launch_dim.x) * 2.f * M_PI); // launch_dim.x is the number of rays launched per pixel, so we divide by it to get the average flux per ray. (exponent+2)/2pi normalizes reflected distribution to unity.
                 }
             }
 
             // absorption
 
-            atomicAdd(&radiation_in_camera[Nbands_launch * prd.origin_UUID + b], strength + strength_spec);
+            atomicAdd(&radiation_in_camera[Nbands_launch * prd.origin_UUID + b], (strength + strength_spec)/M_PI); //note: pi factor is to convert from flux to intensity assuming surface is Lambertian. We don't multiply by the solid angle by convention to avoid very small numbers.
         }
     }
 }
@@ -433,6 +445,14 @@ RT_PROGRAM void miss_direct() {
                     atomicFloatAdd(&scatter_buff_top_cam[ind_origin], strength * t_tau_cam); // transmission
                 }
             }
+            // Accumulate incident radiation for specular (per source, camera-weighted)
+            // Apply camera spectral response weighting: ∫(source × camera) / ∫(source)
+            if (strength > 0) {
+                size_t weight_ind = prd.source_ID * Nbands_launch * Ncameras + b * Ncameras + camera_ID;
+                float camera_weight = source_fluxes_cam[weight_ind];
+                size_t ind_specular = prd.source_ID * Ncameras * Nprimitives * Nbands_launch + camera_ID * Nprimitives * Nbands_launch + prd.origin_UUID * Nbands_launch + b;
+                atomicFloatAdd(&radiation_specular[ind_specular], strength * camera_weight);
+            }
         }
     }
 }
@@ -515,30 +535,63 @@ RT_PROGRAM void miss_diffuse() {
                             atomicFloatAdd(&scatter_buff_top_cam[ind_origin], strength * t_tau_cam); // transmission
                         }
                     }
+                    // Note: Don't accumulate diffuse sky radiation to radiation_specular
+                    // Specular should only reflect DIRECT source radiation (accumulated in miss_direct)
                 }
             }
         }
     }
 }
 
+// Device function to evaluate atmospheric sky radiance based on ray direction
+// Independent analytical implementation based on standard atmospheric scattering physics
+// Following simplified multiplicative formulation similar to Perez/Hosek-Wilkie models
+__device__ float evaluateSkyRadiance(const float3 &ray_dir, const float3 &sun_dir, const float4 &params, float base_radiance) {
+    // params: (circumsolar_strength, circumsolar_width, horizon_brightness, normalization_factor)
+    // base_radiance: Zenith sky radiance in W/m²/sr
+
+    // Angular distance from sun (radians)
+    float cos_gamma = dot(ray_dir, sun_dir);
+    float gamma = acos_safe(cos_gamma);
+
+    // Zenith angle (radians) - z is up
+    float cos_theta = fmaxf(ray_dir.z, 0.0f); // Clamp to avoid below horizon
+
+    // Start with baseline radiance pattern
+    float pattern = 1.0f;
+
+    // Circumsolar brightening: Multiplicative factor that increases radiance near sun
+    // Exponential decay with angular distance from sun (in degrees)
+    float gamma_deg = gamma * 180.0f / float(M_PI);
+    float circumsolar_factor = 1.0f + params.x * expf(-gamma_deg / params.y);
+    pattern *= circumsolar_factor;
+
+    // Horizon brightening: Multiplicative factor that increases radiance toward horizon
+    // Linear interpolation: at zenith (cos_theta=1) factor=1.0, at horizon (cos_theta=0) factor=horizon_brightness
+    float horizon_factor = 1.0f + (params.z - 1.0f) * (1.0f - cos_theta);
+    pattern *= horizon_factor;
+
+    // Apply normalization to ensure energy conservation
+    pattern *= params.w; // normalization_factor
+
+    // Return directional sky radiance (W/m²/sr)
+    return base_radiance * pattern;
+}
+
 RT_PROGRAM void miss_camera() {
 
     for (size_t b = 0; b < Nbands_launch; b++) {
 
-        if (diffuse_flux[b] > 0.f) {
+        if (camera_sky_radiance[b] > 0.f) {
 
-            float fd = 1.f;
-            if (diffuse_extinction[b] > 0.f) {
-                float psi = acos_safe(dot(diffuse_peak_dir[b], ray.direction));
-                if (psi < M_PI / 180.f) {
-                    fd = powf(float(M_PI) / 180.f, -diffuse_extinction[b]) * diffuse_dist_norm[b];
-                } else {
-                    fd = powf(psi, -diffuse_extinction[b]) * diffuse_dist_norm[b];
-                }
-            }
+            // Evaluate directional sky radiance using atmospheric distribution model
+            // camera_sky_radiance[b] contains the base zenith sky radiance (W/m²/sr) from Prague model
+            float sky_radiance = evaluateSkyRadiance(ray.direction, sun_direction, sky_radiance_params[b], camera_sky_radiance[b]);
 
-            // absorption
-            atomicAdd(&radiation_in_camera[Nbands_launch * prd.origin_UUID + b], fd * diffuse_flux[b] * prd.strength);
+            // Accumulate radiance directly (same as surface hits accumulate radiation_out)
+            // Units: W/m²/sr
+            // Monte Carlo averaging: prd.strength = 1/N_rays
+            atomicAdd(&radiation_in_camera[Nbands_launch * prd.origin_UUID + b], sky_radiance * prd.strength);
         }
     }
 }

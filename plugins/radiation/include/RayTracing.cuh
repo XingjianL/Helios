@@ -28,6 +28,9 @@ typedef unsigned int uint;
 rtDeclareVariable(rtObject, top_object, , );
 rtDeclareVariable(unsigned int, random_seed, , );
 rtDeclareVariable(unsigned int, launch_offset, , );
+rtDeclareVariable(unsigned int, camera_pixel_offset_x, , );
+rtDeclareVariable(unsigned int, camera_pixel_offset_y, , );
+rtDeclareVariable(optix::int2, camera_resolution_full, , );
 rtDeclareVariable(unsigned int, launch_face, , );
 rtDeclareVariable(unsigned int, Nbands_launch, , );
 rtDeclareVariable(unsigned int, Nbands_global, , );
@@ -59,6 +62,7 @@ rtBuffer<uint, 1> primitiveID;
 // Radiation sources buffers
 rtDeclareVariable(unsigned int, Nsources, , );
 rtBuffer<float, 1> source_fluxes;
+rtBuffer<float, 1> source_fluxes_cam;  // Camera-weighted source fluxes for specular [source * Nbands * Ncameras]
 rtBuffer<float3, 1> source_positions;
 rtBuffer<float3, 1> source_rotations;
 rtBuffer<float2, 1> source_widths;
@@ -70,6 +74,11 @@ rtBuffer<float, 1> diffuse_extinction;
 rtBuffer<float3, 1> diffuse_peak_dir;
 rtBuffer<float, 1> diffuse_dist_norm;
 rtBuffer<float, 1> Rsky;
+
+// Atmospheric sky radiance parameters (for camera miss rays)
+rtBuffer<float4, 1> sky_radiance_params; // Per-band: (circumsolar_strength, circumsolar_width, horizon_coeff, zenith_scale)
+rtBuffer<float, 1> camera_sky_radiance; // Per-band: base sky radiance (W/m²/sr) for camera atmospheric model
+rtDeclareVariable(float3, sun_direction, , ); // Sun direction vector for sky radiance evaluation
 
 //--- Patches ---//
 rtBuffer<float3, 2> patch_vertices;
@@ -104,6 +113,7 @@ rtBuffer<float, 1> rho_cam, tau_cam;
 rtBuffer<float, 1> specular_exponent;
 rtBuffer<float, 1> specular_scale;
 rtDeclareVariable(unsigned int, specular_reflection_enabled, , );
+rtDeclareVariable(unsigned int, scattering_iteration, , );  // Current scattering iteration (0-based)
 
 // Output buffers
 rtBuffer<float, 1> radiation_in;
@@ -114,6 +124,7 @@ rtBuffer<float, 1> scatter_buff_top;
 rtBuffer<float, 1> scatter_buff_bottom;
 rtBuffer<float, 1> scatter_buff_top_cam;
 rtBuffer<float, 1> scatter_buff_bottom_cam;
+rtBuffer<float, 1> radiation_specular;  // Incident radiation for specular (per source, camera-weighted) [source * Ncameras * Nprimitives * Nbands + camera * Nprimitives * Nbands + primitive * Nbands + band]
 
 // Camera variables
 rtBuffer<unsigned int, 1> camera_pixel_label;
@@ -124,8 +135,9 @@ rtDeclareVariable(float3, camera_position, , );
 rtDeclareVariable(float2, camera_direction, , );
 rtDeclareVariable(float, camera_lens_diameter, , );
 rtDeclareVariable(float, FOV_aspect_ratio, , );
-rtDeclareVariable(float, camera_focal_length, , );
+rtDeclareVariable(float, camera_focal_length, , ); // Focal plane distance (working distance for ray generation), NOT lens optical focal length
 rtDeclareVariable(float, camera_viewplane_length, , );
+rtDeclareVariable(float, camera_pixel_solid_angle, , ); // Solid angle subtended by a single pixel (steradians)
 
 
 void queryGPUMemory(void);
@@ -590,7 +602,7 @@ static __host__ __device__ __inline__ float asin_safe(float x) {
     return asin(x);
 }
 
-// ––––– auxiliary helpers ––––––––––––––––––––––––––––––––––––––
+// ----- auxiliary helpers --------------------------------------
 static __forceinline__ __device__ uint32_t reverseBits32(uint32_t v) {
     // bitwise reverse (Van-der-Corput direction numbers for dim0)
     v = (v << 16) | (v >> 16);
@@ -636,7 +648,7 @@ static __forceinline__ __device__ float sobolDim1(uint32_t idx, uint32_t scrambl
     return uint32ToUnitFloat(res);
 }
 
-// ––––– public entry point –––––––––––––––––––––––––––––––––––––
+// ----- public entry point -------------------------------------
 static __forceinline__ __device__ float2 sobol2D(uint32_t sampleIdx) {
     // Independent Owen scrambles for each dimension
     uint32_t scramble0 = pcgHash(sampleIdx);

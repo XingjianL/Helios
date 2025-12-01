@@ -3,7 +3,7 @@
 #define NOMINMAX
 #endif
 #define WIN32_LEAN_AND_MEAN
-#include <windows.h>
+#include <windows.h> //This header must come first!!!
 #include <commdlg.h>
 #include <thread>
 #elif defined(__APPLE__)
@@ -758,7 +758,7 @@ void ProjectBuilder::record() {
                         if (std::find(curr_band_group.bands.begin(), curr_band_group.bands.end(), "red") != curr_band_group.bands.end() &&
                             std::find(curr_band_group.bands.begin(), curr_band_group.bands.end(), "green") != curr_band_group.bands.end() &&
                             std::find(curr_band_group.bands.begin(), curr_band_group.bands.end(), "blue") != curr_band_group.bands.end()) {
-                            radiation->applyImageProcessingPipeline(cameralabel, "red", "green", "blue", curr_band_group.hdr);
+                            radiation->applyCameraImageCorrections(cameralabel, "red", "green", "blue");
                         }
                         std::vector<std::string> band_group_vec;
                         if (!curr_band_group.grayscale) {
@@ -1032,9 +1032,11 @@ void ProjectBuilder::buildFromXML() {
                 radiation->setDiffuseRadiationExtinctionCoeff("NIR", diffuse_extinction_coeff, sun_dir_vec);
             }
 
-            R_PAR_dir = solarposition->getSolarFluxPAR(101000, air_temperature, air_humidity, turbidity);
-            R_NIR_dir = solarposition->getSolarFluxNIR(101000, air_temperature, air_humidity, turbidity);
-            fdiff = solarposition->getDiffuseFraction(101000, air_temperature, air_humidity, turbidity);
+            // Set atmospheric conditions first, then use parameter-free getters
+            solarposition->setAtmosphericConditions(101000, air_temperature, air_humidity, turbidity);
+            R_PAR_dir = solarposition->getSolarFluxPAR();
+            R_NIR_dir = solarposition->getSolarFluxNIR();
+            fdiff = solarposition->getDiffuseFraction();
 
             radiation->setSourceFlux(sun_ID, "PAR", R_PAR_dir * (1.f - fdiff));
             radiation->setDiffuseRadiationFlux("PAR", R_PAR_dir * fdiff);
@@ -1048,7 +1050,6 @@ void ProjectBuilder::buildFromXML() {
             bandGroup new_band_group{new_band_group_vector, false, false, false};
             band_group_lookup.insert({"default", new_band_group});
             band_group_names.insert("default");
-#endif // SOLARPOSITION && RADIATION_MODEL
 
             context->calculatePrimitiveDataAreaWeightedSum(leaf_UUIDs, "radiation_flux_PAR", PAR_absorbed);
             PAR_absorbed /= ground_area;
@@ -1062,6 +1063,7 @@ void ProjectBuilder::buildFromXML() {
             std::cout << "Absorbed PAR: " << PAR_absorbed << " W/m^2" << std::endl;
             std::cout << "Absorbed NIR: " << NIR_absorbed << " W/m^2" << std::endl;
             std::cout << "Absorbed LW: " << LW_absorbed << " W/m^2" << std::endl;
+#endif // ENABLE_RADIATION_MODEL
         }
         // RIG BLOCK
         // *** Loading any XML files needed for cameras *** //
@@ -1444,8 +1446,8 @@ void ProjectBuilder::xmlGetValues(const std::string &name, const std::string &pa
             std::cout << "WARNING: No value given for '" << name << "'.";
         } else {
             const char *node_str = node.child_value();
-            std::string default_value = node_str;
-            default_vec.push_back(default_value);
+            std::string default_value = trim_whitespace(std::string(node_str));
+            default_vec.push_back(default_value);  // Always push to maintain vector size consistency
         }
     }
 }
@@ -2754,7 +2756,13 @@ void ProjectBuilder::xmlGetValues() {
             new_object.use_texture_file = true;
         } else {
             new_object.use_texture_file = false;
-            context->setPrimitiveColor(new_UUIDs, obj_colors[i]);
+            // Use material system for object color
+            std::string obj_material = "projectbuilder_obj_" + std::to_string(i);
+            if (!context->doesMaterialExist(obj_material)) {
+                context->addMaterial(obj_material);
+            }
+            context->setMaterialColor(obj_material, make_RGBAcolor(obj_colors[i], 1.0f));
+            context->assignMaterialToPrimitive(new_UUIDs, obj_material);
         }
         context->scalePrimitive(new_UUIDs, obj_scales[i]);
         context->rotatePrimitive(new_UUIDs, deg2rad(obj_orientations[i].x), "x");
@@ -5391,7 +5399,7 @@ void ProjectBuilder::lightTab() {
 
 
 void ProjectBuilder::canopyTab(std::string curr_canopy_name, int id) {
-#ifdef ENABLE_PLANT_ARCHITECTURE
+#if defined(ENABLE_PLANT_ARCHITECTURE) && defined(ENABLE_HELIOS_VISUALIZER)
     if (ImGui::Button("Update Canopy")) {
         updateCanopy(curr_canopy_name);
         is_dirty = true;
@@ -6039,29 +6047,56 @@ void ProjectBuilder::updateColor(std::string curr_obj, std::string obj_type, flo
     curr_color->r = new_color[0];
     curr_color->g = new_color[1];
     curr_color->b = new_color[2];
+
+    // Use material system for GUI color editing
     if (obj_type == "obj") {
-        context->setPrimitiveColor(objects_dict[curr_obj].UUIDs, *curr_color);
+        std::string obj_material = "projectbuilder_obj_" + curr_obj;
+        if (!context->doesMaterialExist(obj_material)) {
+            context->addMaterial(obj_material);
+            context->assignMaterialToPrimitive(objects_dict[curr_obj].UUIDs, obj_material);
+        }
+        context->setMaterialColor(obj_material, make_RGBAcolor(*curr_color, 1.0f));
     }
     if (obj_type == "rig") {
         if (arrow_dict.find(curr_obj) != arrow_dict.end()) {
-            for (std::vector<uint> &arrow: arrow_dict.at(curr_obj)) {
-                context->setPrimitiveColor(arrow, *curr_color);
+            std::string arrow_material = "projectbuilder_rig_arrow_" + curr_obj;
+            if (!context->doesMaterialExist(arrow_material)) {
+                context->addMaterial(arrow_material);
+                for (std::vector<uint> &arrow: arrow_dict.at(curr_obj)) {
+                    context->assignMaterialToPrimitive(arrow, arrow_material);
+                }
             }
+            context->setMaterialColor(arrow_material, make_RGBAcolor(*curr_color, 1.0f));
         }
         if (camera_models_dict.find(curr_obj) != camera_models_dict.end()) {
-            context->setPrimitiveColor(camera_models_dict.at(curr_obj), *curr_color);
+            std::string camera_material = "projectbuilder_rig_camera_" + curr_obj;
+            if (!context->doesMaterialExist(camera_material)) {
+                context->addMaterial(camera_material);
+                context->assignMaterialToPrimitive(camera_models_dict.at(curr_obj), camera_material);
+            }
+            context->setMaterialColor(camera_material, make_RGBAcolor(*curr_color, 1.0f));
         }
     }
     if (obj_type == "arrow") {
         if (arrow_dict.find(curr_obj) != arrow_dict.end()) {
-            for (std::vector<uint> &arrow: arrow_dict.at(curr_obj)) {
-                context->setPrimitiveColor(arrow, *curr_color);
+            std::string arrow_material = "projectbuilder_arrow_" + curr_obj;
+            if (!context->doesMaterialExist(arrow_material)) {
+                context->addMaterial(arrow_material);
+                for (std::vector<uint> &arrow: arrow_dict.at(curr_obj)) {
+                    context->assignMaterialToPrimitive(arrow, arrow_material);
+                }
             }
+            context->setMaterialColor(arrow_material, make_RGBAcolor(*curr_color, 1.0f));
         }
     }
     if (obj_type == "camera") {
         if (camera_models_dict.find(curr_obj) != camera_models_dict.end()) {
-            context->setPrimitiveColor(camera_models_dict.at(curr_obj), *curr_color);
+            std::string camera_material = "projectbuilder_camera_" + curr_obj;
+            if (!context->doesMaterialExist(camera_material)) {
+                context->addMaterial(camera_material);
+                context->assignMaterialToPrimitive(camera_models_dict.at(curr_obj), camera_material);
+            }
+            context->setMaterialColor(camera_material, make_RGBAcolor(*curr_color, 1.0f));
         }
     }
 }
@@ -6431,7 +6466,14 @@ void ProjectBuilder::updateGround() {
 
         if (num_tiles.x > 1 || num_tiles.y > 1 || ground_resolution.x > 1 || ground_resolution.y > 1) {
             buildTiledGround(domain_origin, domain_extent, num_tiles, ground_resolution, ground_color_, 0.f);
-            context->setPrimitiveColor(ground_UUIDs, ground_color_);
+
+            // Use material system for ground color
+            std::string ground_material = "projectbuilder_ground";
+            if (!context->doesMaterialExist(ground_material)) {
+                context->addMaterial(ground_material);
+            }
+            context->setMaterialColor(ground_material, make_RGBAcolor(ground_color_, 1.0f));
+            context->assignMaterialToPrimitive(ground_UUIDs, ground_material);
 
             return;
         } else {
@@ -6445,7 +6487,14 @@ void ProjectBuilder::updateGround() {
         ground_color_.b = ground_color[2];
         ground_UUIDs = context->loadOBJ(ground_model_file.c_str());
         ground_objID = context->addPolymeshObject(ground_UUIDs);
-        context->setObjectColor(ground_objID, ground_color_);
+
+        // Use material system for ground object color
+        std::string ground_material = "projectbuilder_ground";
+        if (!context->doesMaterialExist(ground_material)) {
+            context->addMaterial(ground_material);
+        }
+        context->setMaterialColor(ground_material, make_RGBAcolor(ground_color_, 1.0f));
+        context->assignMaterialToObject(ground_objID, ground_material);
     }
     // else {
     //     ground_objID = context->addTileObject(domain_origin, domain_extent, nullrotation, ground_resolution);

@@ -413,6 +413,18 @@ uint Context::addTileObject(const vec3 &center, const vec2 &size, const Spherica
             patch_new->translate(center);
 
             primitives[currentUUID] = patch_new;
+
+            // Set context pointer
+            patch_new->context_ptr = this;
+
+            // Create or reuse material with de-duplication
+            std::string mat_label = generateMaterialLabel(make_RGBAcolor(0, 0, 0, 1), texturefile, false);
+            if (!doesMaterialExist(mat_label)) {
+                patch_new->materialID = addMaterial_internal(mat_label, make_RGBAcolor(0, 0, 0, 1), texturefile);
+            } else {
+                patch_new->materialID = getMaterialIDFromLabel(mat_label);
+            }
+
             currentUUID++;
             UUID.push_back(currentUUID - 1);
         }
@@ -469,6 +481,15 @@ uint Context::addTubeObject(uint radial_subdivisions, const std::vector<vec3> &n
         helios_runtime_error("ERROR (Context::addTubeObject): Size of `nodes' and `radius' arguments must agree.");
     } else if (node_count != color.size()) {
         helios_runtime_error("ERROR (Context::addTubeObject): Size of `nodes' and `color' arguments must agree.");
+    }
+
+    // Clamp very small radii to avoid creating degenerate triangles
+    const float min_radius_threshold = 1e-5f;
+    std::vector<float> radius_clamped = radius;
+    for (int i = 0; i < node_count; i++) {
+        if (radius_clamped[i] < min_radius_threshold && radius_clamped[i] >= 0) {
+            radius_clamped[i] = min_radius_threshold;
+        }
     }
 
     vec3 axial_vector;
@@ -546,7 +567,7 @@ uint Context::addTubeObject(uint radial_subdivisions, const std::vector<vec3> &n
         orthogonal_dir.normalize();
 
         for (int j = 0; j < radial_subdivisions + 1; j++) {
-            vec3 normal = cfact[j] * radius[i] * radial_dir + sfact[j] * radius[i] * orthogonal_dir;
+            vec3 normal = cfact[j] * radius_clamped[i] * radial_dir + sfact[j] * radius_clamped[i] * orthogonal_dir;
             triangle_vertices[i][j] = nodes[i] + normal;
         }
     }
@@ -614,6 +635,15 @@ uint Context::addTubeObject(uint radial_subdivisions, const std::vector<vec3> &n
         helios_runtime_error("ERROR (Context::addTubeObject): Size of `nodes' and `radius' arguments must agree.");
     } else if (node_count != textureuv_ufrac.size()) {
         helios_runtime_error("ERROR (Context::addTubeObject): Size of `nodes' and `textureuv_ufrac' arguments must agree.");
+    }
+
+    // Clamp very small radii to avoid creating degenerate triangles
+    const float min_radius_threshold = 1e-5f;
+    std::vector<float> radius_clamped = radius;
+    for (int i = 0; i < node_count; i++) {
+        if (radius_clamped[i] < min_radius_threshold && radius_clamped[i] >= 0) {
+            radius_clamped[i] = min_radius_threshold;
+        }
     }
 
     vec3 axial_vector;
@@ -693,7 +723,7 @@ uint Context::addTubeObject(uint radial_subdivisions, const std::vector<vec3> &n
         orthogonal_dir.normalize();
 
         for (int j = 0; j < radial_subdivisions + 1; j++) {
-            vec3 normal = cfact[j] * radius[i] * radial_dir + sfact[j] * radius[i] * orthogonal_dir;
+            vec3 normal = cfact[j] * radius_clamped[i] * radial_dir + sfact[j] * radius_clamped[i] * orthogonal_dir;
             triangle_vertices[i][j] = nodes[i] + normal;
 
             uv[i][j].x = textureuv_ufrac[i];

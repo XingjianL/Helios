@@ -9,7 +9,14 @@ endif()
 
 set(CMAKE_MODULE_PATH ${CMAKE_MODULE_PATH} "${CMAKE_CURRENT_SOURCE_DIR}/cmake/Modules/")
 
-add_library(radiation STATIC "src/RadiationModel.cpp"  "src/RadiationCamera.cpp"  "src/CameraCalibration.cpp" "tests/selfTest.cpp")
+add_library(radiation STATIC
+    "src/RadiationModel.cpp"
+    "src/RadiationCamera.cpp"
+    "src/CameraCalibration.cpp"
+    "src/PragueSkyModel.cpp"
+    "src/PragueSkyModelInterface.cpp"
+    "tests/selfTest.cpp"
+)
 
 target_include_directories(radiation PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}/include" "${CMAKE_CURRENT_SOURCE_DIR}/lib/json" )
 
@@ -140,6 +147,8 @@ set(OPTIX_NVCC_FLAGS
 
 if(WIN32)
 	list(APPEND OPTIX_NVCC_FLAGS -DNOMINMAX -D_USE_MATH_DEFINES -D_MWAITXINTRIN_H_INCLUDED -D__STRICT_ANSI__ )
+	# Force UTF-8 encoding for MSVC preprocessor to handle Unicode characters in source files
+	list(APPEND OPTIX_NVCC_FLAGS -Xcompiler /utf-8)
 	if(CMAKE_BUILD_TYPE STREQUAL Debug OR NOT DEFINED CMAKE_BUILD_TYPE OR CMAKE_BUILD_TYPE STREQUAL "")
 		list(APPEND OPTIX_NVCC_FLAGS -g -O0)
 	else()
@@ -220,6 +229,7 @@ add_dependencies(radiation ptx)
 file( COPY include/disk.png DESTINATION ${CMAKE_BINARY_DIR}/plugins/radiation/)
 file( COPY spectral_data DESTINATION ${CMAKE_BINARY_DIR}/plugins/radiation/ )
 file( COPY camera_light_models DESTINATION ${CMAKE_BINARY_DIR}/plugins/radiation/ )
+file( COPY camera_library DESTINATION ${CMAKE_BINARY_DIR}/plugins/radiation/ )
 
 if(BUILD_TESTS)
     add_executable(radiation_tests "tests/TestMain.cpp")

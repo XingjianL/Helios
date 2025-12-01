@@ -183,6 +183,7 @@ void SolarPosition::setSunDirection(const helios::SphericalCoord &sundirection) 
 }
 
 float SolarPosition::getSolarFlux(float pressure_Pa, float temperature_K, float humidity_rel, float turbidity) const {
+    // Deprecated method - kept for backward compatibility
     float Eb_PAR, Eb_NIR, fdiff;
     GueymardSolarModel(pressure_Pa, temperature_K, humidity_rel, turbidity, Eb_PAR, Eb_NIR, fdiff);
     float Eb = Eb_PAR + Eb_NIR;
@@ -193,6 +194,7 @@ float SolarPosition::getSolarFlux(float pressure_Pa, float temperature_K, float 
 }
 
 float SolarPosition::getSolarFluxPAR(float pressure_Pa, float temperature_K, float humidity_rel, float turbidity) const {
+    // Deprecated method - kept for backward compatibility
     float Eb_PAR, Eb_NIR, fdiff;
     GueymardSolarModel(pressure_Pa, temperature_K, humidity_rel, turbidity, Eb_PAR, Eb_NIR, fdiff);
     if (!cloudcalibrationlabel.empty()) {
@@ -202,6 +204,7 @@ float SolarPosition::getSolarFluxPAR(float pressure_Pa, float temperature_K, flo
 }
 
 float SolarPosition::getSolarFluxNIR(float pressure_Pa, float temperature_K, float humidity_rel, float turbidity) const {
+    // Deprecated method - kept for backward compatibility
     float Eb_PAR, Eb_NIR, fdiff;
     GueymardSolarModel(pressure_Pa, temperature_K, humidity_rel, turbidity, Eb_PAR, Eb_NIR, fdiff);
     if (!cloudcalibrationlabel.empty()) {
@@ -211,6 +214,7 @@ float SolarPosition::getSolarFluxNIR(float pressure_Pa, float temperature_K, flo
 }
 
 float SolarPosition::getDiffuseFraction(float pressure_Pa, float temperature_K, float humidity_rel, float turbidity) const {
+    // Deprecated method - kept for backward compatibility
     float Eb_PAR, Eb_NIR, fdiff;
     GueymardSolarModel(pressure_Pa, temperature_K, humidity_rel, turbidity, Eb_PAR, Eb_NIR, fdiff);
     if (!cloudcalibrationlabel.empty()) {
@@ -352,13 +356,10 @@ void SolarPosition::GueymardSolarModel(float pressure, float temperature, float 
 }
 
 float SolarPosition::getAmbientLongwaveFlux(float temperature_K, float humidity_rel) const {
-
+    // Deprecated method - kept for backward compatibility
     // Model from Prata (1996) Q. J. R. Meteorol. Soc.
-
     float e0 = 611.f * exp(17.502f * (temperature_K - 273.f) / ((temperature_K - 273.f) + 240.9f)) * humidity_rel; // Pascals
-
     float K = 0.465f; // cm-K/Pa
-
     float xi = e0 / temperature_K * K;
     float eps = 1.f - (1.f + xi) * exp(-sqrt(1.2f + 3.f * xi));
 
@@ -374,7 +375,14 @@ float SolarPosition::turbidityResidualFunction(float turbidity, std::vector<floa
     float humidity = parameters.at(2);
     float flux_target = parameters.at(3);
 
-    float flux_model = solarpositionmodel->getSolarFlux(pressure, temperature, humidity, turbidity) * cosf(solarpositionmodel->getSunZenith());
+    // Clamp turbidity to minimum positive value (optimization can try negative values)
+    float turbidity_clamped = std::max(1e-5f, turbidity);
+
+    // Use new API: set atmospheric conditions, then get flux
+    // Note: const_cast is needed here because this is an optimization callback that needs to modify internal state
+    auto *mutable_model = const_cast<SolarPosition*>(solarpositionmodel);
+    mutable_model->setAtmosphericConditions(pressure, temperature, humidity, turbidity_clamped);
+    float flux_model = mutable_model->getSolarFlux() * cosf(mutable_model->getSunZenith());
     return flux_model - flux_target;
 }
 
@@ -414,7 +422,9 @@ float SolarPosition::calibrateTurbidityFromTimeseries(const std::string &timeser
 
     solarposition_copy.setSunDirection(solarposition_copy.calculateSunDirection(time_max, date_max));
 
-    float turbidity = fzero(turbidityResidualFunction, parameters, &solarposition_copy, 0.01);
+    helios::WarningAggregator warnings;
+    float turbidity = fzero(turbidityResidualFunction, parameters, &solarposition_copy, 0.01, 0.0001f, 100, &warnings);
+    warnings.report(std::cerr);
 
     return std::max(1e-4F, turbidity);
 }
@@ -432,6 +442,123 @@ void SolarPosition::disableCloudCalibration() {
     cloudcalibrationlabel = "";
 }
 
+void SolarPosition::setAtmosphericConditions(float pressure_Pa, float temperature_K, float humidity_rel, float turbidity) {
+    // Validate input parameters
+    if (pressure_Pa <= 0.f) {
+        helios_runtime_error("ERROR (SolarPosition::setAtmosphericConditions): Atmospheric pressure must be positive. Got " + std::to_string(pressure_Pa) + " Pa.");
+    }
+    if (temperature_K <= 0.f) {
+        helios_runtime_error("ERROR (SolarPosition::setAtmosphericConditions): Temperature must be positive Kelvin. Got " + std::to_string(temperature_K) + " K.");
+    }
+    if (humidity_rel < 0.f || humidity_rel > 1.f) {
+        helios_runtime_error("ERROR (SolarPosition::setAtmosphericConditions): Relative humidity must be between 0 and 1. Got " + std::to_string(humidity_rel) + ".");
+    }
+    if (turbidity < 0.f) {
+        helios_runtime_error("ERROR (SolarPosition::setAtmosphericConditions): Turbidity must be non-negative. Got " + std::to_string(turbidity) + ".");
+    }
+
+    // Set global data in the Context
+    context->setGlobalData("atmosphere_pressure_Pa", pressure_Pa);
+    context->setGlobalData("atmosphere_temperature_K", temperature_K);
+    context->setGlobalData("atmosphere_humidity_rel", humidity_rel);
+    context->setGlobalData("atmosphere_turbidity", turbidity);
+}
+
+void SolarPosition::getAtmosphericConditions(float &pressure_Pa, float &temperature_K, float &humidity_rel, float &turbidity) const {
+    // Default values
+    const float default_pressure = 101325.f;    // 1 atm in Pa
+    const float default_temperature = 300.f;    // 27°C in K
+    const float default_humidity = 0.5f;        // 50%
+    const float default_turbidity = 0.02f;      // clear sky
+
+    static bool warning_issued = false;
+
+    // Check if global data exists and retrieve it, otherwise use defaults
+    bool all_exist = context->doesGlobalDataExist("atmosphere_pressure_Pa") &&
+                     context->doesGlobalDataExist("atmosphere_temperature_K") &&
+                     context->doesGlobalDataExist("atmosphere_humidity_rel") &&
+                     context->doesGlobalDataExist("atmosphere_turbidity");
+
+    if (all_exist) {
+        context->getGlobalData("atmosphere_pressure_Pa", pressure_Pa);
+        context->getGlobalData("atmosphere_temperature_K", temperature_K);
+        context->getGlobalData("atmosphere_humidity_rel", humidity_rel);
+        context->getGlobalData("atmosphere_turbidity", turbidity);
+    } else {
+        if (!warning_issued) {
+            std::cerr << "WARNING (SolarPosition::getAtmosphericConditions): Atmospheric conditions have not been set via setAtmosphericConditions(). Using default values: pressure="
+                      << default_pressure << " Pa, temperature=" << default_temperature << " K, humidity=" << default_humidity << ", turbidity=" << default_turbidity << std::endl;
+            warning_issued = true;
+        }
+        pressure_Pa = default_pressure;
+        temperature_K = default_temperature;
+        humidity_rel = default_humidity;
+        turbidity = default_turbidity;
+    }
+}
+
+float SolarPosition::getSolarFlux() const {
+    float pressure, temperature, humidity, turbidity;
+    getAtmosphericConditions(pressure, temperature, humidity, turbidity);
+
+    float Eb_PAR, Eb_NIR, fdiff;
+    GueymardSolarModel(pressure, temperature, humidity, turbidity, Eb_PAR, Eb_NIR, fdiff);
+    float Eb = Eb_PAR + Eb_NIR;
+    if (!cloudcalibrationlabel.empty()) {
+        applyCloudCalibration(Eb, fdiff);
+    }
+    return Eb;
+}
+
+float SolarPosition::getSolarFluxPAR() const {
+    float pressure, temperature, humidity, turbidity;
+    getAtmosphericConditions(pressure, temperature, humidity, turbidity);
+
+    float Eb_PAR, Eb_NIR, fdiff;
+    GueymardSolarModel(pressure, temperature, humidity, turbidity, Eb_PAR, Eb_NIR, fdiff);
+    if (!cloudcalibrationlabel.empty()) {
+        applyCloudCalibration(Eb_PAR, fdiff);
+    }
+    return Eb_PAR;
+}
+
+float SolarPosition::getSolarFluxNIR() const {
+    float pressure, temperature, humidity, turbidity;
+    getAtmosphericConditions(pressure, temperature, humidity, turbidity);
+
+    float Eb_PAR, Eb_NIR, fdiff;
+    GueymardSolarModel(pressure, temperature, humidity, turbidity, Eb_PAR, Eb_NIR, fdiff);
+    if (!cloudcalibrationlabel.empty()) {
+        applyCloudCalibration(Eb_NIR, fdiff);
+    }
+    return Eb_NIR;
+}
+
+float SolarPosition::getDiffuseFraction() const {
+    float pressure, temperature, humidity, turbidity;
+    getAtmosphericConditions(pressure, temperature, humidity, turbidity);
+
+    float Eb_PAR, Eb_NIR, fdiff;
+    GueymardSolarModel(pressure, temperature, humidity, turbidity, Eb_PAR, Eb_NIR, fdiff);
+    if (!cloudcalibrationlabel.empty()) {
+        applyCloudCalibration(Eb_PAR, fdiff);
+    }
+    return fdiff;
+}
+
+float SolarPosition::getAmbientLongwaveFlux() const {
+    float pressure, temperature, humidity, turbidity;
+    getAtmosphericConditions(pressure, temperature, humidity, turbidity);
+
+    // Model from Prata (1996) Q. J. R. Meteorol. Soc.
+    float e0 = 611.f * exp(17.502f * (temperature - 273.f) / ((temperature - 273.f) + 240.9f)) * humidity; // Pascals
+    float K = 0.465f; // cm-K/Pa
+    float xi = e0 / temperature * K;
+    float eps = 1.f - (1.f + xi) * exp(-sqrt(1.2f + 3.f * xi));
+
+    return eps * 5.67e-8 * pow(temperature, 4);
+}
+
 void SolarPosition::applyCloudCalibration(float &R_calc_Wm2, float &fdiff_calc) const {
 
     assert(context->doesTimeseriesVariableExist(cloudcalibrationlabel.c_str()));
@@ -446,4 +573,512 @@ void SolarPosition::applyCloudCalibration(float &R_calc_Wm2, float &fdiff_calc) 
         R_calc_Wm2 = R;
         fdiff_calc = fdiff;
     }
+}
+
+// ===== SSolar-GOA Spectral Solar Radiation Model =====
+
+void SolarPosition::SpectralData::loadFromDirectory(const std::string& data_path) {
+    // Load wehrli.dat (TOA spectrum)
+    std::string wehrli_file = data_path + "/wehrli.dat";
+    std::ifstream wehrli_stream(wehrli_file);
+    if (!wehrli_stream.is_open()) {
+        helios_runtime_error("ERROR (SolarPosition::SpectralData::loadFromDirectory): Could not open file " + wehrli_file);
+    }
+
+    wavelengths_nm.clear();
+    toa_irradiance.clear();
+
+    std::string line;
+    while (std::getline(wehrli_stream, line)) {
+        // Skip comments and empty lines
+        if (line.empty() || line[0] == '#') {
+            continue;
+        }
+
+        std::istringstream iss(line);
+        float wavelength, irradiance;
+        if (iss >> wavelength >> irradiance) {
+            wavelengths_nm.push_back(wavelength);
+            toa_irradiance.push_back(irradiance);
+        }
+    }
+    wehrli_stream.close();
+
+    if (wavelengths_nm.empty()) {
+        helios_runtime_error("ERROR (SolarPosition::SpectralData::loadFromDirectory): No data loaded from " + wehrli_file);
+    }
+
+    // Load abscoef.dat (absorption coefficients)
+    std::string abscoef_file = data_path + "/abscoef.dat";
+    std::ifstream abscoef_stream(abscoef_file);
+    if (!abscoef_stream.is_open()) {
+        helios_runtime_error("ERROR (SolarPosition::SpectralData::loadFromDirectory): Could not open file " + abscoef_file);
+    }
+
+    h2o_coef.clear();
+    h2o_exp.clear();
+    o3_xsec.clear();
+    o2_coef.clear();
+
+    while (std::getline(abscoef_stream, line)) {
+        // Skip comments and empty lines
+        if (line.empty() || line[0] == '#') {
+            continue;
+        }
+
+        std::istringstream iss(line);
+        float wavelength, h2o_c, h2o_e, o3_x, o2_c;
+        float no2_x, co2_c;  // We don't use these, but need to read them
+        if (iss >> wavelength >> h2o_c >> h2o_e >> o3_x >> o2_c >> no2_x >> co2_c) {
+            h2o_coef.push_back(h2o_c);
+            h2o_exp.push_back(h2o_e);
+            o3_xsec.push_back(o3_x);
+            o2_coef.push_back(o2_c);
+        }
+    }
+    abscoef_stream.close();
+
+    if (h2o_coef.empty()) {
+        helios_runtime_error("ERROR (SolarPosition::SpectralData::loadFromDirectory): No data loaded from " + abscoef_file);
+    }
+
+    // Validate that wavelength arrays match
+    if (wavelengths_nm.size() != h2o_coef.size()) {
+        helios_runtime_error("ERROR (SolarPosition::SpectralData::loadFromDirectory): Wavelength arrays from wehrli.dat and abscoef.dat do not match in size");
+    }
+
+    // Validate wavelength range (should be 300-2600 nm)
+    if (wavelengths_nm.front() < 299.5f || wavelengths_nm.front() > 300.5f) {
+        helios_runtime_error("ERROR (SolarPosition::SpectralData::loadFromDirectory): Expected wavelength range to start near 300 nm, got " + std::to_string(wavelengths_nm.front()));
+    }
+    if (wavelengths_nm.back() < 2599.5f || wavelengths_nm.back() > 2600.5f) {
+        helios_runtime_error("ERROR (SolarPosition::SpectralData::loadFromDirectory): Expected wavelength range to end near 2600 nm, got " + std::to_string(wavelengths_nm.back()));
+    }
+}
+
+float SolarPosition::SpectralData::interpolate(const std::vector<float>& x, const std::vector<float>& y, float x_val) {
+    if (x.empty() || y.empty() || x.size() != y.size()) {
+        helios_runtime_error("ERROR (SolarPosition::SpectralData::interpolate): Invalid input vectors");
+    }
+
+    // If x_val is outside the range, return boundary values
+    if (x_val <= x.front()) {
+        return y.front();
+    }
+    if (x_val >= x.back()) {
+        return y.back();
+    }
+
+    // Find the two points for interpolation using binary search
+    auto it = std::lower_bound(x.begin(), x.end(), x_val);
+    if (it == x.begin()) {
+        return y.front();
+    }
+    if (it == x.end()) {
+        return y.back();
+    }
+
+    size_t idx1 = std::distance(x.begin(), it) - 1;
+    size_t idx2 = idx1 + 1;
+
+    // Linear interpolation
+    float x1 = x[idx1];
+    float x2 = x[idx2];
+    float y1 = y[idx1];
+    float y2 = y[idx2];
+
+    return y1 + (y2 - y1) * (x_val - x1) / (x2 - x1);
+}
+
+float SolarPosition::calculateGeometricFactor(int julian_day) const {
+    // Fourier series coefficients for Earth-Sun distance correction
+    // Based on Duffie and Beckman (2013), Solar Engineering of Thermal Processes
+    const float c[] = {1.00011f, 0.03422f, 0.00128f, 0.000719f, 0.000077f};
+
+    // Day angle in radians
+    float day_angle = (julian_day - 1) * 2.0f * M_PI / 365.0f;
+    float day_angle_2 = day_angle * 2.0f;
+
+    // Calculate geometric factor (inverse square of Earth-Sun distance ratio)
+    float geo_factor = c[0]
+                     + c[1] * cosf(day_angle) + c[2] * sinf(day_angle)
+                     + c[3] * cosf(day_angle_2) + c[4] * sinf(day_angle_2);
+
+    return geo_factor;
+}
+
+void SolarPosition::calculateRayleighTransmittance(
+    const std::vector<float>& wavelengths_um,
+    float mu0,
+    float pressure_ratio,
+    std::vector<float>& tdir,
+    std::vector<float>& tglb,
+    std::vector<float>& tdif,
+    std::vector<float>& atm_albedo
+) const {
+    // Bates (1984) formula for Rayleigh optical depth with Sobolev approximation
+    const float c[] = {117.2594f, -1.3215f, 0.000320f, -0.000076f};
+
+    // Resize output vectors
+    size_t n = wavelengths_um.size();
+    tdir.resize(n);
+    tglb.resize(n);
+    tdif.resize(n);
+    atm_albedo.resize(n);
+
+    for (size_t i = 0; i < n; ++i) {
+        float w = wavelengths_um[i];
+        float w2 = w * w;
+        float w4 = w2 * w2;
+
+        // Rayleigh optical depth (Bates formula)
+        float tau = pressure_ratio / (c[0] * w4 + c[1] * w2 + c[2] + c[3] / w2);
+
+        // Direct beam transmittance (Beer-Lambert law)
+        tdir[i] = expf(-tau / mu0);
+
+        // Global transmittance (Sobolev's two-stream approximation)
+        tglb[i] = ((2.0f/3.0f + mu0) + (2.0f/3.0f - mu0) * tdir[i]) / (4.0f/3.0f + tau);
+
+        // Diffuse transmittance
+        tdif[i] = tglb[i] - tdir[i];
+
+        // Atmospheric albedo (spherical albedo for Rayleigh scattering)
+        atm_albedo[i] = tau * (1.0f - expf(-2.0f * tau)) / (2.0f + tau);
+    }
+}
+
+void SolarPosition::calculateAerosolTransmittance(
+    const std::vector<float>& wavelengths_um,
+    float mu0,
+    float alpha,
+    float beta,
+    float w0,
+    float g,
+    std::vector<float>& tdir,
+    std::vector<float>& tglb,
+    std::vector<float>& tdif,
+    std::vector<float>& atm_albedo
+) const {
+    // Ångström law for aerosol optical depth with Ambartsumian solution for transmittance
+
+    // Resize output vectors
+    size_t n = wavelengths_um.size();
+    tdir.resize(n);
+    tglb.resize(n);
+    tdif.resize(n);
+    atm_albedo.resize(n);
+
+    // Ambartsumian's parameter
+    float K = sqrtf((1.0f - w0) * (1.0f - w0 * g));
+    float r0 = (K - 1.0f + w0) / (K + 1.0f - w0);
+
+    for (size_t i = 0; i < n; ++i) {
+        float w = wavelengths_um[i];
+
+        // Ångström formula for aerosol optical depth
+        float tau = beta / powf(w, alpha);
+
+        // Direct beam transmittance
+        tdir[i] = expf(-tau / mu0);
+
+        // Ambartsumian's solution for global transmittance
+        float tdir_k = powf(tdir[i], K);
+        tglb[i] = (1.0f - r0 * r0) * tdir_k / (1.0f - r0 * r0 * tdir_k * tdir_k);
+
+        // Diffuse transmittance
+        tdif[i] = tglb[i] - tdir[i];
+
+        // Atmospheric albedo for aerosols
+        float g_factor = (1.0f - g) * w0;
+        atm_albedo[i] = g_factor * tau / (2.0f + g_factor * tau)
+                       * (1.0f + expf(-g_factor * tau));
+    }
+}
+
+void SolarPosition::calculateMixtureTransmittance(
+    const std::vector<float>& wavelengths_um,
+    float mu0,
+    float pressure_Pa,
+    float turbidity_beta,
+    float angstrom_alpha,
+    float aerosol_ssa,
+    float aerosol_g,
+    bool coupling,
+    std::vector<float>& tglb,
+    std::vector<float>& tdir,
+    std::vector<float>& tdif,
+    std::vector<float>& atm_albedo
+) const {
+    // Combined Rayleigh-aerosol transmittance with coupling (Cachorro et al. 2022, Eq. 20)
+
+    float pressure_ratio = pressure_Pa / 101325.0f;
+
+    // Calculate separate Rayleigh and aerosol components
+    std::vector<float> ray_tdir, ray_tglb, ray_tdif, ray_albedo;
+    std::vector<float> aer_tdir, aer_tglb, aer_tdif, aer_albedo;
+
+    calculateRayleighTransmittance(wavelengths_um, mu0, pressure_ratio,
+                                  ray_tdir, ray_tglb, ray_tdif, ray_albedo);
+    calculateAerosolTransmittance(wavelengths_um, mu0, angstrom_alpha, turbidity_beta,
+                                 aerosol_ssa, aerosol_g,
+                                 aer_tdir, aer_tglb, aer_tdif, aer_albedo);
+
+    // Resize output vectors
+    size_t n = wavelengths_um.size();
+    tglb.resize(n);
+    tdir.resize(n);
+    tdif.resize(n);
+    atm_albedo.resize(n);
+
+    // Combine transmittances
+    for (size_t i = 0; i < n; ++i) {
+        if (coupling) {
+            // With Rayleigh-aerosol coupling (Cachorro et al. 2022, Eq. 20)
+            float beta_w = turbidity_beta / powf(wavelengths_um[i], angstrom_alpha);
+            float tau_w = beta_w / mu0;
+            float coup_term = tau_w * (1.0f - aer_tglb[i]);
+
+            tglb[i] = ray_tglb[i] * aer_tglb[i] + coup_term;
+            tdir[i] = ray_tdir[i] * aer_tdir[i];
+        } else {
+            // Without coupling (simple multiplication)
+            tglb[i] = ray_tglb[i] * aer_tglb[i];
+            tdir[i] = ray_tdir[i] * aer_tdir[i];
+        }
+
+        tdif[i] = tglb[i] - tdir[i];
+
+        // Combined atmospheric albedo (weighted average)
+        atm_albedo[i] = ray_albedo[i] + aer_albedo[i];
+    }
+}
+
+void SolarPosition::calculateWaterVaporTransmittance(
+    const SpectralData& data,
+    float mu0,
+    float water_vapor_cm,
+    std::vector<float>& transmittance
+) const {
+    // Water vapor absorption using empirical coefficients (Gueymard 1994)
+
+    size_t n = data.wavelengths_nm.size();
+    transmittance.resize(n);
+
+    for (size_t i = 0; i < n; ++i) {
+        float h2o_coef = data.h2o_coef[i];
+        float h2o_exp = data.h2o_exp[i];
+
+        if (h2o_exp < 1e-6f) {
+            // No absorption in this band
+            transmittance[i] = 1.0f;
+        } else {
+            // Power law absorption model
+            float optical_depth = powf(h2o_coef * water_vapor_cm / mu0, h2o_exp);
+            transmittance[i] = expf(-optical_depth);
+        }
+    }
+}
+
+void SolarPosition::calculateOzoneTransmittance(
+    const SpectralData& data,
+    float mu0,
+    float ozone_DU,
+    std::vector<float>& transmittance
+) const {
+    // Ozone absorption using measured cross sections
+    const float LOSCHMIDT = 2.687e19f;  // molecules/cm³ at STP
+
+    size_t n = data.wavelengths_nm.size();
+    transmittance.resize(n);
+
+    for (size_t i = 0; i < n; ++i) {
+        // Convert cross section to absorption coefficient
+        float o3_coef = LOSCHMIDT * data.o3_xsec[i];  // cm⁻¹
+
+        // Convert ozone column from Dobson Units to cm
+        float o3_path_cm = ozone_DU * 1e-3f;
+
+        // Calculate optical depth and transmittance
+        float optical_depth = o3_coef * o3_path_cm / mu0;
+        transmittance[i] = expf(-optical_depth);
+    }
+}
+
+void SolarPosition::calculateOxygenTransmittance(
+    const SpectralData& data,
+    float mu0,
+    std::vector<float>& transmittance
+) const {
+    // Oxygen absorption (primarily A-band at 760 nm and continuum)
+    const float O2_PATH = 0.209f * 173200.0f;  // atm-cm
+    const float O2_EXP = 0.5641f;
+
+    size_t n = data.wavelengths_nm.size();
+    transmittance.resize(n);
+
+    for (size_t i = 0; i < n; ++i) {
+        float o2_coef = data.o2_coef[i];
+
+        // Power law absorption model for O2
+        float optical_depth = powf(o2_coef * O2_PATH / mu0, O2_EXP);
+        transmittance[i] = expf(-optical_depth);
+    }
+}
+
+void SolarPosition::calculateSpectralIrradianceComponents(
+    std::vector<helios::vec2>& global_spectrum,
+    std::vector<helios::vec2>& direct_spectrum,
+    std::vector<helios::vec2>& diffuse_spectrum,
+    float resolution_nm
+) const {
+    // Validate resolution
+    if (resolution_nm < 1.0f) {
+        helios_runtime_error("ERROR (SolarPosition::calculateSpectralIrradianceComponents): resolution_nm must be >= 1 nm, got " + std::to_string(resolution_nm));
+    }
+    if (resolution_nm > 2300.0f) {
+        helios_runtime_error("ERROR (SolarPosition::calculateSpectralIrradianceComponents): resolution_nm must be <= 2300 nm, got " + std::to_string(resolution_nm));
+    }
+    // Get atmospheric conditions
+    float pressure, temperature, humidity, turbidity_beta;
+    getAtmosphericConditions(pressure, temperature, humidity, turbidity_beta);
+
+    // Derive additional parameters
+    uint DOY = context->getJulianDate();
+
+    // Water vapor from Viswanadham (1981)
+    float gamma = logf(humidity) + 17.67f * (temperature - 273.0f) / 268.0f;
+    float tdp = 243.0f * gamma / (17.67f - gamma) * 9.0f / 5.0f + 32.0f;
+    float water_vapor_cm = expf((0.1133f - logf(5.0f)) + 0.0393f * tdp);
+
+    // Ozone from van Heuklon (1979)
+    float uo_atm_cm = (235.0f + (150.0f + 40.0f * sinf(0.9856f * (DOY - 30.0f) * M_PI / 180.0f)
+                      + 20.0f * sinf(3.0f * (longitude * M_PI / 180.0f + 20.0f)))
+                      * powf(sinf(1.28f * latitude * M_PI / 180.0f), 2)) * 0.001f;
+    float ozone_DU = uo_atm_cm * 1000.0f;
+
+    // Fixed parameters
+    const float angstrom_alpha = 1.3f;
+    const float surface_albedo = 0.2f;
+    const float aerosol_ssa = 0.90f;
+    const float aerosol_g = 0.85f;
+
+    // Load spectral data (cached after first load)
+    static SpectralData spectral_data;
+    static bool data_loaded = false;
+    if (!data_loaded) {
+        spectral_data.loadFromDirectory("plugins/solarposition/ssolar_goa");
+        data_loaded = true;
+    }
+
+    // Calculate solar geometry
+    float sun_zenith = getSunZenith();
+    float mu0 = cosf(sun_zenith);
+    if (mu0 <= 0.0f) {
+        helios_runtime_error("ERROR (SolarPosition::calculateSpectralIrradiance): Cannot calculate spectral irradiance when sun is below horizon (zenith angle = " + std::to_string(sun_zenith * 180.0f / M_PI) + " degrees)");
+    }
+
+    int julian_day = context->getJulianDate();
+    float geo_factor = calculateGeometricFactor(julian_day);
+
+    // Apply geometric factor to TOA spectrum
+    std::vector<float> toa_irr(spectral_data.toa_irradiance.size());
+    for (size_t i = 0; i < toa_irr.size(); ++i) {
+        toa_irr[i] = spectral_data.toa_irradiance[i] * geo_factor;
+    }
+
+    // Convert wavelengths from nm to μm
+    std::vector<float> wavelengths_um(spectral_data.wavelengths_nm.size());
+    for (size_t i = 0; i < wavelengths_um.size(); ++i) {
+        wavelengths_um[i] = spectral_data.wavelengths_nm[i] * 0.001f;
+    }
+
+    // Calculate atmospheric scattering transmittances
+    std::vector<float> t_scat_glb, t_scat_dir, t_scat_dif, atm_alb;
+    calculateMixtureTransmittance(wavelengths_um, mu0,
+                                 pressure, turbidity_beta, angstrom_alpha,
+                                 aerosol_ssa, aerosol_g,
+                                 true, t_scat_glb, t_scat_dir, t_scat_dif, atm_alb);
+
+    // Calculate gas absorption transmittances
+    std::vector<float> t_h2o, t_o3, t_o2;
+    calculateWaterVaporTransmittance(spectral_data, mu0, water_vapor_cm, t_h2o);
+    calculateOzoneTransmittance(spectral_data, mu0, ozone_DU, t_o3);
+    calculateOxygenTransmittance(spectral_data, mu0, t_o2);
+
+    // Combine gas transmittances
+    std::vector<float> t_gas(spectral_data.wavelengths_nm.size());
+    for (size_t i = 0; i < t_gas.size(); ++i) {
+        t_gas[i] = t_h2o[i] * t_o3[i] * t_o2[i];
+    }
+
+    // Calculate amplification factor
+    std::vector<float> amp_factor(spectral_data.wavelengths_nm.size());
+    for (size_t i = 0; i < amp_factor.size(); ++i) {
+        amp_factor[i] = 1.0f / (1.0f - surface_albedo * atm_alb[i]);
+    }
+
+    // Calculate spectral irradiances
+    global_spectrum.clear();
+    direct_spectrum.clear();
+    diffuse_spectrum.clear();
+    global_spectrum.reserve(spectral_data.wavelengths_nm.size());
+    direct_spectrum.reserve(spectral_data.wavelengths_nm.size());
+    diffuse_spectrum.reserve(spectral_data.wavelengths_nm.size());
+
+    for (size_t i = 0; i < spectral_data.wavelengths_nm.size(); ++i) {
+        float wavelength_nm = spectral_data.wavelengths_nm[i];
+
+        float direct_irr = toa_irr[i] * t_scat_dir[i] * t_gas[i];
+        float global_irr = toa_irr[i] * mu0 * t_scat_glb[i] * t_gas[i] * amp_factor[i];
+        float diffuse_irr = global_irr - direct_irr * mu0;
+
+        global_spectrum.push_back(helios::make_vec2(wavelength_nm, global_irr));
+        direct_spectrum.push_back(helios::make_vec2(wavelength_nm, direct_irr));
+        diffuse_spectrum.push_back(helios::make_vec2(wavelength_nm, diffuse_irr));
+    }
+
+    // Downsample if requested resolution is coarser than 1 nm
+    if (resolution_nm > 1.0f + 1e-5f) {
+        std::vector<helios::vec2> global_downsampled, direct_downsampled, diffuse_downsampled;
+
+        for (float wl = 300.0f; wl <= 2600.0f; wl += resolution_nm) {
+            // Find closest wavelength in original spectrum
+            float min_dist = std::numeric_limits<float>::max();
+            size_t closest_idx = 0;
+            for (size_t i = 0; i < global_spectrum.size(); ++i) {
+                float dist = std::fabs(global_spectrum[i].x - wl);
+                if (dist < min_dist) {
+                    min_dist = dist;
+                    closest_idx = i;
+                }
+            }
+
+            global_downsampled.push_back(global_spectrum[closest_idx]);
+            direct_downsampled.push_back(direct_spectrum[closest_idx]);
+            diffuse_downsampled.push_back(diffuse_spectrum[closest_idx]);
+        }
+
+        global_spectrum = global_downsampled;
+        direct_spectrum = direct_downsampled;
+        diffuse_spectrum = diffuse_downsampled;
+    }
+}
+
+void SolarPosition::calculateDirectSolarSpectrum(const std::string& label, float resolution_nm) {
+    std::vector<helios::vec2> global_spectrum, direct_spectrum, diffuse_spectrum;
+    calculateSpectralIrradianceComponents(global_spectrum, direct_spectrum, diffuse_spectrum, resolution_nm);
+    context->setGlobalData(label.c_str(), direct_spectrum);
+}
+
+void SolarPosition::calculateDiffuseSolarSpectrum(const std::string& label, float resolution_nm) {
+    std::vector<helios::vec2> global_spectrum, direct_spectrum, diffuse_spectrum;
+    calculateSpectralIrradianceComponents(global_spectrum, direct_spectrum, diffuse_spectrum, resolution_nm);
+    context->setGlobalData(label.c_str(), diffuse_spectrum);
+}
+
+void SolarPosition::calculateGlobalSolarSpectrum(const std::string& label, float resolution_nm) {
+    std::vector<helios::vec2> global_spectrum, direct_spectrum, diffuse_spectrum;
+    calculateSpectralIrradianceComponents(global_spectrum, direct_spectrum, diffuse_spectrum, resolution_nm);
+    context->setGlobalData(label.c_str(), global_spectrum);
 }

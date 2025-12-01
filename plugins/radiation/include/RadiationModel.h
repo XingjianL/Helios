@@ -18,6 +18,7 @@
 
 #include "CameraCalibration.h"
 #include "Context.h"
+#include "PragueSkyModelInterface.h"
 #include "json.hpp"
 
 // NVIDIA OptiX Includes
@@ -38,8 +39,11 @@ struct CameraProperties {
     //! Camera sensor resolution (number of pixels) in the horizontal (.x) and vertical (.y) directions
     helios::int2 camera_resolution;
 
-    //! Distance from the viewing plane to the focal plane
+    //! Distance from the viewing plane to the focal plane (working distance for ray generation)
     float focal_plane_distance;
+
+    //! Camera lens optical focal length in meters (characteristic of the lens, used for f-number and aperture calculations). This is the physical focal length, not the 35mm equivalent.
+    float lens_focal_length;
 
     //! Diameter of the camera lens (lens_diameter = 0 gives a 'pinhole' camera with everything in focus)
     float lens_diameter;
@@ -47,20 +51,51 @@ struct CameraProperties {
     //! Camera horizontal field of view in degrees
     float HFOV;
 
-    //! Ratio of camera horizontal field of view to vertical field of view (HFOV/VFOV)
+    //! Ratio of camera horizontal field of view to vertical field of view (HFOV/VFOV). DEPRECATED: This parameter is auto-calculated from camera_resolution to ensure square pixels. Setting it explicitly will be ignored with a warning.
     float FOV_aspect_ratio;
+
+    //! Physical sensor width in mm (default 35mm full-frame)
+    float sensor_width_mm;
+
+    //! Camera model name (e.g., "Nikon D700", "Canon EOS 5D")
+    std::string model;
+
+    //! Lens make/manufacturer (e.g., "Canon", "Nikon")
+    std::string lens_make;
+
+    //! Lens model name (e.g., "AF-S NIKKOR 50mm f/1.8G")
+    std::string lens_model;
+
+    //! Lens specification (e.g., "50mm f/1.8", "18-55mm f/3.5-5.6")
+    std::string lens_specification;
+
+    //! Exposure mode: "auto" (automatic exposure), "ISOXXX" (ISO-based, e.g., "ISO100"), or "manual" (no automatic exposure scaling). ISO mode is calibrated to match auto-exposure at reference settings (ISO 100, 1/125s, f/2.8) for typical Helios scenes.
+    std::string exposure;
+
+    //! Camera shutter speed in seconds (used for ISO-based exposure calculations). Example: 1/125 second = 0.008
+    float shutter_speed;
+
+    //! White balance mode: "auto" (automatic white balance using spectral response) or "off" (no white balance correction)
+    std::string white_balance;
 
     CameraProperties() {
         camera_resolution = helios::make_int2(512, 512);
         focal_plane_distance = 1;
+        lens_focal_length = 0.05; // 50mm default
         lens_diameter = 0.05;
-        FOV_aspect_ratio = 1.f;
+        FOV_aspect_ratio = 0.f; // Sentinel value: 0 means auto-calculate from camera_resolution
         HFOV = 20.f;
-        FOV_aspect_ratio = 1.f;
+        sensor_width_mm = 35.f;
+        model = "generic";
+        exposure = "auto";
+        shutter_speed = 1.f / 125.f; // 1/125 second (standard default)
+        white_balance = "auto";
     }
 
     bool operator==(const CameraProperties &rhs) const {
-        return camera_resolution == rhs.camera_resolution && focal_plane_distance == rhs.focal_plane_distance && lens_diameter == rhs.lens_diameter && FOV_aspect_ratio == rhs.FOV_aspect_ratio && HFOV == rhs.HFOV;
+        return camera_resolution == rhs.camera_resolution && focal_plane_distance == rhs.focal_plane_distance && lens_focal_length == rhs.lens_focal_length && lens_diameter == rhs.lens_diameter && FOV_aspect_ratio == rhs.FOV_aspect_ratio && HFOV == rhs.HFOV &&
+               sensor_width_mm == rhs.sensor_width_mm && model == rhs.model && lens_make == rhs.lens_make && lens_model == rhs.lens_model && lens_specification == rhs.lens_specification &&
+               exposure == rhs.exposure && shutter_speed == rhs.shutter_speed && white_balance == rhs.white_balance;
     }
 };
 
@@ -73,11 +108,20 @@ struct RadiationCamera {
         for (const auto &band: band_label) {
             band_spectral_response[band] = "uniform";
         }
-        focal_length = camera_properties.focal_plane_distance;
+        focal_length = camera_properties.focal_plane_distance;  // working distance for ray generation
+        lens_focal_length = camera_properties.lens_focal_length;  // optical focal length for aperture
         resolution = camera_properties.camera_resolution;
         lens_diameter = camera_properties.lens_diameter;
         HFOV_degrees = camera_properties.HFOV;
         FOV_aspect_ratio = camera_properties.FOV_aspect_ratio;
+        sensor_width_mm = camera_properties.sensor_width_mm;
+        model = camera_properties.model;
+        lens_make = camera_properties.lens_make;
+        lens_model = camera_properties.lens_model;
+        lens_specification = camera_properties.lens_specification;
+        exposure = camera_properties.exposure;
+        shutter_speed = camera_properties.shutter_speed;
+        white_balance = camera_properties.white_balance;
     }
 
     // Label for camera array
@@ -90,12 +134,32 @@ struct RadiationCamera {
     float lens_diameter;
     // Resolution of camera sub-divisions (i.e., pixels)
     helios::int2 resolution;
-    // camera focal length.
+    // camera focal length (working distance for ray generation)
     float focal_length;
+    // lens optical focal length (for f-number and aperture calculations). This is the physical focal length, not the 35mm equivalent.
+    float lens_focal_length;
     // camera horizontal field of view (degrees)
     float HFOV_degrees;
     // Ratio of camera horizontal field of view to vertical field of view
     float FOV_aspect_ratio;
+    // Physical sensor width in mm
+    float sensor_width_mm;
+    // Camera model name
+    std::string model;
+    // Lens make/manufacturer
+    std::string lens_make;
+    // Lens model name
+    std::string lens_model;
+    // Lens specification
+    std::string lens_specification;
+    // Exposure mode: "auto", "ISOXXX" (e.g., "ISO100"), or "manual"
+    std::string exposure;
+    // Camera shutter speed in seconds
+    float shutter_speed;
+    // White balance mode: "auto" or "off"
+    std::string white_balance;
+    // Camera type (rgb, spectral, or thermal)
+    std::string camera_type;
     // Number of antialiasing samples per pixel
     uint antialiasing_samples;
 
@@ -149,25 +213,19 @@ struct RadiationCamera {
      */
     void whiteBalanceWhitePatch(const std::string &red_band_label, const std::string &green_band_label, const std::string &blue_band_label, float percentile = 0.99f);
 
-    //! Automatically select and apply best white balance algorithm based on scene analysis
-    /**
-     * Analyzes scene characteristics and applies the most appropriate white balance method.
-     * \param[in] red_band_label Label for red channel band
-     * \param[in] green_band_label Label for green channel band
-     * \param[in] blue_band_label Label for blue channel band
-     */
-    void whiteBalanceAuto(const std::string &red_band_label, const std::string &green_band_label, const std::string &blue_band_label);
 
-    //! Apply camera spectral response pre-correction to compensate for known sensor bias
+    //! Apply spectral-based white balance using integrated camera response curves
     /**
-     * Computes correction factors based on camera spectral response curves to neutralize
-     * the inherent spectral bias of the camera sensor before white balance.
+     * Normalizes image channels based on the integrated spectral response of each camera band.
+     * This method assumes a flat light source spectrum and normalizes each channel such that
+     * an object with flat spectral reflectance appears correctly white balanced.
+     * Each channel is multiplied by the reciprocal of its integrated spectral response.
      * \param[in] red_band_label Label for red channel band
      * \param[in] green_band_label Label for green channel band
      * \param[in] blue_band_label Label for blue channel band
      * \param[in] context Pointer to Helios context for accessing spectral data
      */
-    void applyCameraSpectralCorrection(const std::string &red_band_label, const std::string &green_band_label, const std::string &blue_band_label, helios::Context *context);
+    void whiteBalanceSpectral(const std::string &red_band_label, const std::string &green_band_label, const std::string &blue_band_label, helios::Context *context);
 
     //! Apply Reinhard tone mapping curve to image data
     /**
@@ -234,6 +292,34 @@ struct RadiationCamera {
      */
     void autoExposure(const std::string &red_band_label, const std::string &green_band_label, const std::string &blue_band_label, float gain_multiplier);
 
+    //! Apply camera exposure based on the camera's exposure setting
+    /**
+     * Applies exposure scaling to pixel_data based on the camera's exposure mode:
+     * - "auto": Automatic exposure using percentile-based normalization (18% gray target for RGB, per-band for spectral)
+     * - "ISOXXX" (e.g., "ISO100"): Fixed exposure based on ISO, shutter speed, and aperture settings.
+     *   Calibrated to match auto-exposure at reference settings (ISO 100, 1/125s, f/2.8) for typical Helios scenes.
+     *   Higher ISO/longer shutter/wider aperture → proportionally brighter.
+     * - "manual": No automatic exposure scaling applied
+     *
+     * This method should be called after rendering is complete and pixel_data is populated.
+     * \param[in] context Pointer to Helios context for accessing spectral data
+     */
+    void applyCameraExposure(helios::Context *context);
+
+    //! Apply automatic white balance correction to camera image data
+    /**
+     * Applies white balance correction based on the camera's white_balance setting:
+     * - "auto": Applies spectral white balance using camera spectral response curves
+     * - "off": No white balance correction applied
+     *
+     * White balance is automatically skipped for single-channel (grayscale) images.
+     * For multi-channel images, white balance is applied simultaneously to all channels.
+     *
+     * This method should be called after rendering and exposure adjustment are complete.
+     * \param[in] context Pointer to Helios context for accessing spectral data
+     */
+    void applyCameraWhiteBalance(helios::Context *context);
+
     //! Adjust brightness and contrast of image data
     /**
      * \param[in] red_band_label Label for red channel band
@@ -253,19 +339,7 @@ struct RadiationCamera {
      */
     void adjustSaturation(const std::string &red_band_label, const std::string &green_band_label, const std::string &blue_band_label, float saturation);
 
-private:
-    //! Computes the luminance of a color given its red, green, and blue components.
-    /**
-     * \param[in] red Red component of the color.
-     * \param[in] green Green component of the color.
-     * \param[in] blue Blue component of the color.
-     * \return The luminance value calculated as a weighted sum of the red, green, and blue components.
-     */
-    static float luminance(float red, float green, float blue) noexcept {
-        return 0.2126f * red + 0.7152f * green + 0.0722f * blue;
-    }
-
-    //! Converts a value to the sRGB color space.
+    //! Converts a linear color value to sRGB color space.
     /**
      * \param[in] x Input value to be converted. Values > 1.0 are clipped to white (1.0).
      * \return Corresponding value in the sRGB color space, clamped to [0.0, 1.0].
@@ -287,6 +361,79 @@ private:
     static float srgb_to_lin(float v) noexcept {
         return (v <= 0.04045f) ? v / 12.92f : std::pow((v + 0.055f) / 1.055f, 2.4f);
     }
+
+private:
+    //! Computes the luminance of a color given its red, green, and blue components.
+    /**
+     * \param[in] red Red component of the color.
+     * \param[in] green Green component of the color.
+     * \param[in] blue Blue component of the color.
+     * \return The luminance value calculated as a weighted sum of the red, green, and blue components.
+     */
+    static float luminance(float red, float green, float blue) noexcept {
+        return 0.2126f * red + 0.7152f * green + 0.0722f * blue;
+    }
+};
+
+//! Metadata for radiation camera image export
+struct CameraMetadata {
+
+    //! Full path to the associated image file
+    std::string path;
+
+    //! Camera intrinsic properties
+    struct CameraProperties {
+        int height; //!< Image height in pixels
+        int width; //!< Image width in pixels
+        int channels; //!< Number of spectral bands (1=grayscale, 3=RGB)
+        std::string type; //!< Camera type: "rgb" (3-channel), "spectral" (1-N channel), or "thermal" (1 channel thermal)
+        float focal_length; //!< Optical focal length in mm (physical focal length, not 35mm equivalent)
+        std::string aperture; //!< Aperture f-stop (e.g., "f/2.8" or "pinhole")
+        float sensor_width; //!< Physical sensor width in mm
+        float sensor_height; //!< Physical sensor height in mm
+        std::string model; //!< Camera model name (e.g., "Nikon D700", "generic")
+        std::string lens_make; //!< Lens make/manufacturer (e.g., "Canon", "Nikon")
+        std::string lens_model; //!< Lens model name (e.g., "AF-S NIKKOR 50mm f/1.8G")
+        std::string lens_specification; //!< Lens specification (e.g., "50mm f/1.8", "18-55mm f/3.5-5.6")
+        std::string exposure; //!< Exposure mode: "auto", "ISOXXX" (e.g., "ISO100"), or "manual"
+        float shutter_speed; //!< Shutter speed in seconds (e.g., 0.008 for 1/125s)
+        std::string white_balance; //!< White balance mode: "auto" or "off"
+    } camera_properties;
+
+    //! Geographic location properties
+    struct LocationProperties {
+        float latitude; //!< Latitude in degrees (+N/-S)
+        float longitude; //!< Longitude in degrees (+E/-W)
+    } location_properties;
+
+    //! Image acquisition properties
+    struct AcquisitionProperties {
+        std::string date; //!< Acquisition date (YYYY-MM-DD format)
+        std::string time; //!< Acquisition time (HH:MM:SS format)
+        float UTC_offset; //!< UTC offset in hours
+        float camera_height_m; //!< Camera height above ground in meters
+        float camera_angle_deg; //!< Camera tilt angle from horizontal (0=horizontal, 90=down)
+        std::string light_source; //!< Lighting type: "sunlight", "artificial", "mixed", or "none"
+    } acquisition_properties;
+
+    //! Image processing corrections applied to the image
+    struct ImageProcessingProperties {
+        float saturation_adjustment = 1.f;  //!< Saturation adjustment factor (1.0 = no change)
+        float brightness_adjustment = 1.f;  //!< Brightness adjustment factor (1.0 = no change)
+        float contrast_adjustment = 1.f;    //!< Contrast adjustment factor (1.0 = no change)
+        std::string color_space = "linear"; //!< Output color space: "linear" or "sRGB"
+    } image_processing;
+
+    //! Agronomic properties derived from plant architecture data
+    struct AgronomicProperties {
+        std::vector<std::string> plant_species; //!< List of unique plant species visible in image (from object data 'plant_name')
+        std::vector<int> plant_count; //!< Number of plants per species, parallel to plant_species (from unique 'plantID' values)
+        std::vector<float> plant_height_m; //!< Average height of plants per species in meters, parallel to plant_species (from object data 'plant_height')
+        std::vector<float> plant_age_days; //!< Average age of plants per species in days, parallel to plant_species (from object data 'age')
+        std::vector<std::string> plant_stage; //!< Most common phenological stage per species, parallel to plant_species (from object data 'phenology_stage')
+        std::vector<float> leaf_area_m2; //!< Total visible leaf area per species in square meters, parallel to plant_species (computed from leaf primitive areas)
+        std::string weed_pressure; //!< Weed pressure classification: "low" (0-20%), "moderate" (21-40%), "high" (>40%), or empty if no data
+    } agronomic_properties;
 };
 
 //! Properties defining a radiation band
@@ -880,10 +1027,7 @@ public:
      * \param[in] primitive_data_radprop_label Name of primitive data field to set with interpolated spectrum label (e.g., "reflectivity_spectrum" or "transmissivity_spectrum")
      * \note This function must be called before \ref updateRadiativeProperties(). The interpolation uses nearest-neighbor selection based on the absolute distance between the queried value and the provided mapping values.
      */
-    void interpolateSpectrumFromPrimitiveData(const std::vector<uint> &primitive_UUIDs,
-                                              const std::vector<std::string> &spectra,
-                                              const std::vector<float> &values,
-                                              const std::string &primitive_data_query_label,
+    void interpolateSpectrumFromPrimitiveData(const std::vector<uint> &primitive_UUIDs, const std::vector<std::string> &spectra, const std::vector<float> &values, const std::string &primitive_data_query_label,
                                               const std::string &primitive_data_radprop_label);
 
     //! Configure automatic spectral interpolation based on object data values
@@ -899,11 +1043,7 @@ public:
      * \note This function must be called before \ref updateRadiativeProperties(). The interpolation uses nearest-neighbor selection based on the absolute distance between the queried value and the provided mapping values.
      * \note Although this function reads object data, it sets primitive data because radiative properties are defined per-primitive. All primitives belonging to the object will have their primitive data set.
      */
-    void interpolateSpectrumFromObjectData(const std::vector<uint> &object_IDs,
-                                          const std::vector<std::string> &spectra,
-                                          const std::vector<float> &values,
-                                          const std::string &object_data_query_label,
-                                          const std::string &primitive_data_radprop_label);
+    void interpolateSpectrumFromObjectData(const std::vector<uint> &object_IDs, const std::vector<std::string> &spectra, const std::vector<float> &values, const std::string &object_data_query_label, const std::string &primitive_data_radprop_label);
 
     //! Set the number of scattering iterations for a certain band
     /**
@@ -970,6 +1110,58 @@ public:
      */
     void setCameraSpectralResponseFromLibrary(const std::string &camera_label, const std::string &camera_library_name);
 
+    //! Add a radiation camera sensor loading all properties from the camera library
+    /**
+     * This method loads camera intrinsic parameters (resolution, field of view, sensor size)
+     * and spectral response data from the camera library XML file. The camera is created with
+     * the specified position and viewing direction.
+     *
+     * Available cameras can be found in plugins/radiation/camera_library/camera_library.xml.
+     * The library includes cameras such as: Canon_20D, Nikon_D700, Nikon_D50, iPhone11, iPhone12ProMAX.
+     *
+     * Each camera in the library defines spectral bands (typically "red", "green", and "blue" for RGB cameras).
+     * If these bands do not already exist in the radiation model, they will be automatically created
+     * with emission disabled and scattering depth set to 3.
+     *
+     * \param[in] camera_label A label that will be used to refer to the camera instance.
+     * \param[in] library_camera_label Label of the camera in the library (e.g., "Canon_20D", "iPhone11").
+     * \param[in] position Cartesian (x,y,z) location of the camera sensor.
+     * \param[in] lookat Cartesian (x,y,z) position at which the camera is pointed.
+     * \param[in] antialiasing_samples Number of ray samples per pixel (minimum 1).
+     */
+    void addRadiationCameraFromLibrary(const std::string &camera_label,
+                                       const std::string &library_camera_label,
+                                       const helios::vec3 &position,
+                                       const helios::vec3 &lookat,
+                                       uint antialiasing_samples);
+
+    //! Add a radiation camera sensor loading all properties from the camera library with custom band names
+    /**
+     * This overload allows specifying custom band labels instead of using the default labels from the
+     * camera library XML file. This is useful when you want to use different band names than those
+     * defined in the library (e.g., using "R", "G", "B" instead of "red", "green", "blue").
+     *
+     * The custom band labels are mapped to the spectral responses in the order they appear in the
+     * camera library XML file. For example, if the XML defines spectral responses in order
+     * "red", "green", "blue" and you provide band_labels = {"R", "G", "B"}, then "R" will use
+     * the "red" spectral response, "G" will use "green", and "B" will use "blue".
+     *
+     * \param[in] camera_label A label that will be used to refer to the camera instance.
+     * \param[in] library_camera_label Label of the camera in the library (e.g., "Canon_20D", "iPhone11").
+     * \param[in] position Cartesian (x,y,z) location of the camera sensor.
+     * \param[in] lookat Cartesian (x,y,z) position at which the camera is pointed.
+     * \param[in] antialiasing_samples Number of ray samples per pixel (minimum 1).
+     * \param[in] band_labels Custom band labels to use. Must have the same number of elements as there
+     *                        are spectral responses defined in the camera library entry. The order must
+     *                        correspond to the order of spectral_response elements in the XML.
+     */
+    void addRadiationCameraFromLibrary(const std::string &camera_label,
+                                       const std::string &library_camera_label,
+                                       const helios::vec3 &position,
+                                       const helios::vec3 &lookat,
+                                       uint antialiasing_samples,
+                                       const std::vector<std::string> &band_labels);
+
     //! Set the position of the radiation camera.
     /**
      * \param[in] camera_label Label for the camera to be set.
@@ -1019,11 +1211,73 @@ public:
      */
     helios::SphericalCoord getCameraOrientation(const std::string &camera_label) const;
 
+    //! Get the intrinsic parameters of an existing radiation camera
+    /**
+     * This method returns the current intrinsic optical and geometric parameters of a camera
+     * including resolution, horizontal field of view, lens diameter, focal plane distance,
+     * sensor width, model name, and the auto-calculated FOV aspect ratio.
+     *
+     * \param[in] camera_label Label identifying the camera to query. Camera must exist.
+     * \return CameraProperties struct containing the current intrinsic parameters.
+     * \note This method does not return camera position, lookat direction, or spectral band configuration.
+     * \note The returned FOV_aspect_ratio is the auto-calculated value ensuring square pixels.
+     * \note Throws helios_runtime_error if camera_label does not exist.
+     */
+    CameraProperties getCameraParameters(const std::string &camera_label) const;
+
+    //! Update intrinsic parameters of an existing radiation camera
+    /**
+     * This method updates the intrinsic optical and geometric parameters of an existing camera.
+     * The camera position, lookat direction, and spectral bands are preserved. All fields in
+     * CameraProperties can be updated including resolution, HFOV, lens diameter, focal plane
+     * distance, sensor width, and model name. If resolution changes, pixel buffers will be
+     * reallocated on the next call to runRadiationImaging().
+     *
+     * \param[in] camera_label Label identifying the camera to update. Camera must already exist.
+     * \param[in] camera_properties CameraProperties struct containing the new intrinsic parameters.
+     * \note This method preserves the camera's position, lookat direction, and spectral band configuration.
+     * \note The FOV_aspect_ratio field in camera_properties is ignored and recalculated from resolution.
+     * \note Throws helios_runtime_error if camera_label does not exist.
+     */
+    void updateCameraParameters(const std::string &camera_label, const CameraProperties &camera_properties);
+
     //! Get the labels for all radiation cameras that have been added to the radiation model
     /**
      * \return Vector of strings corresponding to each camera label.
      */
     std::vector<std::string> getAllCameraLabels();
+
+    //! Enable automatic JSON metadata file writing for a camera
+    /**
+     * \param[in] camera_label Label for the camera to enable metadata writing for.
+     * \note After calling this method, writeCameraImage() will automatically create a JSON metadata file alongside the image.
+     * \note Metadata is automatically populated from camera properties and simulation context. Use getCameraMetadata() and setCameraMetadata() to customize.
+     */
+    void enableCameraMetadata(const std::string &camera_label);
+
+    //! Enable automatic JSON metadata file writing for multiple cameras
+    /**
+     * \param[in] camera_labels Vector of camera labels to enable metadata writing for.
+     * \note After calling this method, writeCameraImage() will automatically create a JSON metadata file alongside the image for each camera.
+     * \note Metadata is automatically populated from camera properties and simulation context. Use getCameraMetadata() and setCameraMetadata() to customize.
+     */
+    void enableCameraMetadata(const std::vector<std::string> &camera_labels);
+
+    //! Get the current metadata for a camera
+    /**
+     * \param[in] camera_label Label for the camera to get metadata for.
+     * \return CameraMetadata struct containing current metadata for the camera.
+     * \note Metadata is automatically populated when cameras are added. This method allows retrieval for inspection or modification.
+     */
+    CameraMetadata getCameraMetadata(const std::string &camera_label) const;
+
+    //! Set metadata for a camera to be automatically written with images
+    /**
+     * \param[in] camera_label Label for the camera to set metadata for.
+     * \param[in] metadata CameraMetadata struct containing metadata to be written with camera images.
+     * \note When writeCameraImage() is called for this camera, a JSON metadata file will be automatically created alongside the image.
+     */
+    void setCameraMetadata(const std::string &camera_label, const CameraMetadata &metadata);
 
     //! Adds all geometric primitives from the Context to OptiX
     /**
@@ -1125,9 +1379,11 @@ public:
     void runRadiationImaging(const std::vector<std::string> &cameralabels, const std::vector<std::string> &sourcelabels, const std::vector<std::string> &bandlabels, const std::vector<std::string> &cameraresponselabels, helios::vec2 wavelengthrange,
                              float fluxscale = 1, float diffusefactor = 0.0005, uint scatteringdepth = 4);
 
-    //! Apply a digital camera-like processing pipeline to the camera image
+    //! Apply camera image corrections including brightness, contrast, saturation, and gamma compression
     /**
-     * This only applies to RGB cameras.
+     * This only applies to RGB cameras. This pipeline applies post-processing steps including
+     * brightness/contrast adjustment, saturation adjustment, and gamma compression.
+     * The parameters are saved to camera metadata if metadata export is enabled.
      *
      * \param[in] cameralabel Label of camera to be used for processing
      * \param[in] red_band_label Label of the red band
@@ -1136,10 +1392,14 @@ public:
      * \param[in] saturation_adjustment [optional] Adjustment factor for saturation (default is 1.0, which means no adjustment)
      * \param[in] brightness_adjustment [optional] Adjustment factor for brightness (default is 1.0, which means no adjustment)
      * \param[in] contrast_adjustment [optional] Adjustment factor for contrast (default is 1.0, which means no adjustment)
-     * \param[in] gain_adjustment [optional] Adjustment factor for exposure gain (default is 1.0, which uses auto-exposure)
      */
-    void applyImageProcessingPipeline(const std::string &cameralabel, const std::string &red_band_label, const std::string &green_band_label, const std::string &blue_band_label, float saturation_adjustment = 1.f, float brightness_adjustment = 1.f,
-                                      float contrast_adjustment = 1.f, float gain_adjustment = 1.f);
+    void applyCameraImageCorrections(const std::string &cameralabel, const std::string &red_band_label, const std::string &green_band_label, const std::string &blue_band_label, float saturation_adjustment = 1.f, float brightness_adjustment = 1.f,
+                                     float contrast_adjustment = 1.f);
+
+    //! \deprecated Use applyCameraImageCorrections() instead
+    [[deprecated("Use applyCameraImageCorrections() instead")]]
+    void applyImageProcessingPipeline(const std::string &cameralabel, const std::string &red_band_label, const std::string &green_band_label, const std::string &blue_band_label, float saturation_adjustment = 1.f,
+                                      float brightness_adjustment = 1.f, float contrast_adjustment = 1.f, float gain_adjustment = 1.f);
 
     //! Apply pre-computed color correction matrix to camera data
     /**
@@ -1150,35 +1410,6 @@ public:
      * \param[in] ccm_file_path Path to XML file containing color correction matrix
      */
     void applyCameraColorCorrectionMatrix(const std::string &camera_label, const std::string &red_band_label, const std::string &green_band_label, const std::string &blue_band_label, const std::string &ccm_file_path);
-
-    //! Apply auto white balancing algorithm selection based on scene analysis
-    /**
-     * \param[in] cameralabel Label of camera to apply white balance to
-     * \param[in] red_band_label Label of the red band
-     * \param[in] green_band_label Label of the green band
-     * \param[in] blue_band_label Label of the blue band
-     */
-    void whiteBalanceAuto(const std::string &cameralabel, const std::string &red_band_label, const std::string &green_band_label, const std::string &blue_band_label);
-
-    //! Apply White Patch white balancing algorithm
-    /**
-     * \param[in] cameralabel Label of camera to apply white balance to
-     * \param[in] red_band_label Label of the red band
-     * \param[in] green_band_label Label of the green band
-     * \param[in] blue_band_label Label of the blue band
-     * \param[in] percentile Percentile value for white patch selection (default is 0.99)
-     */
-    void whiteBalanceWhitePatch(const std::string &cameralabel, const std::string &red_band_label, const std::string &green_band_label, const std::string &blue_band_label, float percentile = 0.99f);
-
-    //! Apply Gray World white balancing algorithm with custom Minkowski p-parameter
-    /**
-     * \param[in] cameralabel Label of camera to apply white balance to
-     * \param[in] red_band_label Label of the red band
-     * \param[in] green_band_label Label of the green band
-     * \param[in] blue_band_label Label of the blue band
-     * \param[in] p Minkowski p-parameter (default is 6.0)
-     */
-    void whiteBalanceGrayWorld(const std::string &cameralabel, const std::string &red_band_label, const std::string &green_band_label, const std::string &blue_band_label, float p = 6.0f);
 
 
     //! Write camera data for one or more bands to a JPEG image
@@ -1266,8 +1497,9 @@ public:
      * \param[in] append_label_file [optional] If true, the label file will be appended to the existing file. If false, the label file will be overwritten. By default, it is false.
      * \param[in] frame [optional] A frame count number to be appended to the output file (e.g., camera_thermal_00001.txt). By default, the frame count will be omitted from the file name. This value must be less than or equal to 99,999.
      */
-    DEPRECATED(void writeImageBoundingBoxes(const std::string &cameralabel, const std::string &primitive_data_label, uint object_class_ID, const std::string &imagefile_base, const std::string &image_path = "./", bool append_label_file = false,
-                                            int frame = -1));
+    [[deprecated]]
+    void writeImageBoundingBoxes(const std::string &cameralabel, const std::string &primitive_data_label, uint object_class_ID, const std::string &imagefile_base, const std::string &image_path = "./", bool append_label_file = false,
+                                 int frame = -1);
 
     //! Write bounding boxes based on object data labels (Ultralytic's YOLO format). Object data must have type of 'uint' or 'int'.
     /**
@@ -1279,8 +1511,9 @@ public:
      * \param[in] append_label_file [optional] If true, the label file will be appended to the existing file. If false, the label file will be overwritten. By default, it is false.
      * \param[in] frame [optional] A frame count number to be appended to the output file (e.g., camera_thermal_00001.txt). By default, the frame count will be omitted from the file name. This value must be less than or equal to 99,999.
      */
-    DEPRECATED(void writeImageBoundingBoxes_ObjectData(const std::string &cameralabel, const std::string &object_data_label, uint object_class_ID, const std::string &imagefile_base, const std::string &image_path = "./",
-                                                       bool append_label_file = false, int frame = -1));
+    [[deprecated]]
+    void writeImageBoundingBoxes_ObjectData(const std::string &cameralabel, const std::string &object_data_label, uint object_class_ID, const std::string &imagefile_base, const std::string &image_path = "./",
+                                            bool append_label_file = false, int frame = -1);
 
     //! Write bounding boxes based on primitive data labels (Ultralytic's YOLO format). Primitive data must have type of 'uint' or 'int'.
     /**
@@ -1341,11 +1574,13 @@ public:
      * \param[in] object_class_ID Object class ID to write for the labels in this group.
      * \param[in] json_filename Name of the output JSON file. Can include a relative path. If no extension is provided, ".json" will be added.
      * \param[in] image_file Name of the image file corresponding to these labels
-     * \param[in] data_attribute_labels [optional] Vector of primitive or object data labels to calculate mean values within each mask and write as attributes. If empty or data doesn't exist, no attributes are added. By default, it is an empty vector.
+     * \param[in] data_attribute_labels [optional] Vector of primitive or object data labels to calculate mean values within each mask and write as attributes. If empty or data doesn't exist, no attributes are added. By default, it is an empty
+     * vector.
      * \param[in] append_file [optional] If true, the data will be appended to the existing COCO JSON file. If false, a new file will be created. By default, it is false.
      * \note The lengths of primitive_data_label and object_class_ID vectors must be the same.
      */
-    void writeImageSegmentationMasks(const std::string &cameralabel, const std::string &primitive_data_label, const uint &object_class_ID, const std::string &json_filename, const std::string &image_file, const std::vector<std::string> &data_attribute_labels = {}, bool append_file = false);
+    void writeImageSegmentationMasks(const std::string &cameralabel, const std::string &primitive_data_label, const uint &object_class_ID, const std::string &json_filename, const std::string &image_file,
+                                     const std::vector<std::string> &data_attribute_labels = {}, bool append_file = false);
 
     //! Write segmentation masks for primitive data in COCO JSON format. Primitive data must have type of 'uint' or 'int'.
     /**
@@ -1354,7 +1589,8 @@ public:
      * \param[in] object_class_ID Object class ID to write for the labels in this group.
      * \param[in] json_filename Name of the output JSON file. Can include a relative path. If no extension is provided, ".json" will be added.
      * \param[in] image_file Name of the image file corresponding to these labels
-     * \param[in] data_attribute_labels [optional] Vector of primitive or object data labels to calculate mean values within each mask and write as attributes. If empty or data doesn't exist, no attributes are added. By default, it is an empty vector.
+     * \param[in] data_attribute_labels [optional] Vector of primitive or object data labels to calculate mean values within each mask and write as attributes. If empty or data doesn't exist, no attributes are added. By default, it is an empty
+     * vector.
      * \param[in] append_file [optional] If true, the data will be appended to the existing COCO JSON file. If false, a new file will be created. By default, it is false.
      * \note The lengths of primitive_data_label and object_class_ID vectors must be the same.
      */
@@ -1368,11 +1604,13 @@ public:
      * \param[in] object_class_ID Object class ID to write for the labels in this group.
      * \param[in] json_filename Name of the output JSON file. Can include a relative path. If no extension is provided, ".json" will be added.
      * \param[in] image_file Name of the image file corresponding to these labels
-     * \param[in] data_attribute_labels [optional] Vector of primitive or object data labels to calculate mean values within each mask and write as attributes. If empty or data doesn't exist, no attributes are added. By default, it is an empty vector.
+     * \param[in] data_attribute_labels [optional] Vector of primitive or object data labels to calculate mean values within each mask and write as attributes. If empty or data doesn't exist, no attributes are added. By default, it is an empty
+     * vector.
      * \param[in] append_file [optional] If true, the data will be appended to the existing COCO JSON file. If false, a new file will be created. By default, it is false.
      * \note The lengths of object_data_label and object_class_ID vectors must be the same.
      */
-    void writeImageSegmentationMasks_ObjectData(const std::string &cameralabel, const std::string &object_data_label, const uint &object_class_ID, const std::string &json_filename, const std::string &image_file, const std::vector<std::string> &data_attribute_labels = {}, bool append_file = false);
+    void writeImageSegmentationMasks_ObjectData(const std::string &cameralabel, const std::string &object_data_label, const uint &object_class_ID, const std::string &json_filename, const std::string &image_file,
+                                                const std::vector<std::string> &data_attribute_labels = {}, bool append_file = false);
 
     //! Write segmentation masks for object data in COCO JSON format. Object data must have type of 'uint' or 'int'.
     /**
@@ -1381,7 +1619,8 @@ public:
      * \param[in] object_class_ID Object class ID to write for the labels in this group.
      * \param[in] json_filename Name of the output JSON file. Can include a relative path. If no extension is provided, ".json" will be added.
      * \param[in] image_file Name of the image file corresponding to these labels
-     * \param[in] data_attribute_labels [optional] Vector of primitive or object data labels to calculate mean values within each mask and write as attributes. If empty or data doesn't exist, no attributes are added. By default, it is an empty vector.
+     * \param[in] data_attribute_labels [optional] Vector of primitive or object data labels to calculate mean values within each mask and write as attributes. If empty or data doesn't exist, no attributes are added. By default, it is an empty
+     * vector.
      * \param[in] append_file [optional] If true, the data will be appended to the existing COCO JSON file. If false, a new file will be created. By default, it is false.
      * \note The lengths of object_data_label and object_class_ID vectors must be the same.
      */
@@ -1401,6 +1640,13 @@ private:
     std::vector<std::pair<int, int>> traceBoundaryMoore(const std::vector<std::vector<bool>> &mask, int start_x, int start_y, const helios::int2 &camera_resolution);
     std::vector<std::pair<int, int>> traceBoundarySimple(const std::vector<std::vector<bool>> &mask, int start_x, int start_y, const helios::int2 &camera_resolution);
     std::vector<std::map<std::string, std::vector<float>>> generateAnnotationsFromMasks(const std::map<int, std::vector<std::vector<bool>>> &label_masks, uint object_class_ID, const helios::int2 &camera_resolution, int image_id);
+
+    // Helper functions for camera metadata export
+    std::string detectLightingType() const;
+    float calculateCameraTiltAngle(const helios::vec3 &position, const helios::vec3 &lookat) const;
+    void computeAgronomicProperties(const std::string &camera_label, CameraMetadata::AgronomicProperties &props) const;
+    void populateCameraMetadata(const std::string &camera_label, CameraMetadata &metadata) const;
+    std::string writeCameraMetadataFile(const std::string &camera_label, const std::string &output_path = "./") const;
 
 public:
     //! Set padding value for pixels do not have valid values
@@ -1513,6 +1759,10 @@ protected:
     RTbuffer source_fluxes_RTbuffer;
     //! Fluxes of external radiation sources - RTvariable
     RTvariable source_fluxes_RTvariable;
+    //! Camera-weighted fluxes of external radiation sources for specular - RTbuffer object
+    RTbuffer source_fluxes_cam_RTbuffer;
+    //! Camera-weighted fluxes of external radiation sources for specular - RTvariable
+    RTvariable source_fluxes_cam_RTvariable;
 
     //! Widths of external radiation sources - RTbuffer object
     RTbuffer source_widths_RTbuffer;
@@ -1530,6 +1780,12 @@ protected:
     //! Radiation cameras
     std::map<std::string, RadiationCamera> cameras;
 
+    //! Camera metadata for JSON export
+    std::map<std::string, CameraMetadata> camera_metadata;
+
+    //! Set of cameras with metadata JSON writing enabled
+    std::set<std::string> metadata_enabled_cameras;
+
     //! Positions of radiation camera center points - RTvariable
     RTvariable camera_position_RTvariable;
 
@@ -1542,11 +1798,14 @@ protected:
     //! Radiation FOV aspect ratio - RTvariable
     RTvariable FOV_aspect_RTvariable;
 
-    //! Radiation camera focal length - RTvariable
+    //! Radiation camera focal plane distance (working distance for ray generation, NOT lens optical focal length) - RTvariable
     RTvariable camera_focal_length_RTvariable;
 
     //! Radiation camera distance between lens and sensor plane - RTvariable
     RTvariable camera_viewplane_length_RTvariable;
+
+    //! Solid angle subtended by a single camera pixel (steradians) - RTvariable
+    RTvariable camera_pixel_solid_angle_RTvariable;
 
     //! Number of radiation cameras
     RTvariable Ncameras_RTvariable;
@@ -1562,17 +1821,17 @@ protected:
 
     //! Storage for spectral interpolation configurations
     struct SpectrumInterpolationConfig {
-        std::unordered_set<uint> primitive_UUIDs;     // Primitive UUIDs to apply this config to
-        std::unordered_set<uint> object_IDs;          // Object IDs to apply this config to
-        std::vector<std::string> spectra_labels;      // Global data labels for spectra
-        std::vector<float> mapping_values;            // Values corresponding to each spectrum
-        std::string query_data_label;                 // Primitive/object data to query (e.g., "age")
-        std::string target_data_label;                // Primitive data to set (e.g., "reflectivity_spectrum")
+        std::unordered_set<uint> primitive_UUIDs; // Primitive UUIDs to apply this config to
+        std::unordered_set<uint> object_IDs; // Object IDs to apply this config to
+        std::vector<std::string> spectra_labels; // Global data labels for spectra
+        std::vector<float> mapping_values; // Values corresponding to each spectrum
+        std::string query_data_label; // Primitive/object data to query (e.g., "age")
+        std::string target_data_label; // Primitive data to set (e.g., "reflectivity_spectrum")
     };
 
     std::vector<SpectrumInterpolationConfig> spectrum_interpolation_configs;
 
-    std::vector<helios::vec2> generateGaussianCameraResponse(float FWHM, float mu, float centrawavelength, const helios::int2 &wavebanrange);
+    std::vector<helios::vec2> generateGaussianCameraResponse(float FWHM, float mu, float centrawavelength, const helios::int2 &wavebandrange);
 
     // --- Constants and Defaults --- //
 
@@ -1622,6 +1881,25 @@ protected:
         \note \ref RadiationModel::updateRadiativeProperties() must be called before simulation can be run
     */
     void updateRadiativeProperties();
+
+    //! Update atmospheric sky radiance model for camera radiation calculations
+    /** This function computes spectral sky radiance based on atmospheric conditions from SolarPosition plugin.
+     *  Integrates atmospheric sky spectrum weighted by camera spectral response for each band.
+     *  Uses analytical atmospheric physics model (independent implementation based on Rayleigh/Mie scattering).
+     *
+     *  Reads atmospheric parameters from Context global data:
+     *  - atmosphere_pressure_Pa: Atmospheric pressure in Pascals
+     *  - atmosphere_temperature_K: Air temperature in Kelvin
+     *  - atmosphere_humidity_rel: Relative humidity (0-1)
+     *  - atmosphere_turbidity: Ångström's aerosol turbidity coefficient (AOD at 500nm)
+     *
+     * \param[in] band_labels Labels for all bands to be launched
+     * \param[in] camera Reference to the camera being traced
+     * \note Turbidity uses the same convention as SolarPosition plugin (AOD at 500nm, NOT Linke turbidity)
+     * \note If camera spectral response is "uniform", wavelength bounds from the band must be set
+     * \return Vector of base sky radiance values (W/m²/sr) for each band, to be used for camera rendering
+     */
+    std::vector<float> updateAtmosphericSkyModel(const std::vector<std::string> &band_labels, const RadiationCamera &camera);
 
     //! Load Context global data corresponding to spectral data
     /**
@@ -1838,6 +2116,15 @@ protected:
     //! Primitive offset used for tiling ray launches
     RTvariable launch_offset_RTvariable;
 
+    //! Camera pixel x-offset for tiling camera ray launches
+    RTvariable camera_pixel_offset_x_RTvariable;
+
+    //! Camera pixel y-offset for tiling camera ray launches
+    RTvariable camera_pixel_offset_y_RTvariable;
+
+    //! Full camera resolution (not tile size) for camera ray launches
+    RTvariable camera_resolution_full_RTvariable;
+
     //! Flag designating which face of the primitive the launch is for
     RTvariable launch_face_RTvariable;
 
@@ -1873,6 +2160,17 @@ protected:
     //! Diffuse distribution normalization factor
     RTvariable diffuse_dist_norm_RTvariable;
     RTbuffer diffuse_dist_norm_RTbuffer;
+
+    //! Atmospheric sky radiance parameters for camera miss rays
+    RTvariable sky_radiance_params_RTvariable;
+    RTbuffer sky_radiance_params_RTbuffer;
+
+    //! Base sky radiance for camera atmospheric model (separate from diffuse_flux used for radiation transfer)
+    RTvariable camera_sky_radiance_RTvariable;
+    RTbuffer camera_sky_radiance_RTbuffer;
+
+    //! Sun direction for atmospheric sky radiance evaluation
+    RTvariable sun_direction_RTvariable;
 
     //! Radiation emission flag
     RTvariable emission_flag_RTvariable;
@@ -1920,6 +2218,9 @@ protected:
      * = 2 -> specular reflection is enabled with per-primitive scale coefficient specified
      */
     RTvariable specular_reflection_enabled_RTvariable;
+
+    //! Current scattering iteration (0-based) for camera ray tracing
+    RTvariable scattering_iteration_RTvariable;
 
     //! Primitive type - RTbuffer object
     RTbuffer primitive_type_RTbuffer;
@@ -2027,6 +2328,10 @@ protected:
     RTbuffer scatter_buff_bottom_RTbuffer;
     //! "to-be-scattered" radiative energy (reflected/emitted) for bottom surface each object - RTvariable
     RTvariable scatter_buff_bottom_RTvariable;
+    //! Incident radiative energy for specular reflection (without rho/tau applied) - RTbuffer object
+    RTbuffer radiation_specular_RTbuffer;
+    //! Incident radiative energy for specular reflection - RTvariable
+    RTvariable radiation_specular_RTvariable;
 
     //! Incoming radiative energy for each camera pixel - RTbuffer
     RTbuffer radiation_in_camera_RTbuffer;
@@ -2123,6 +2428,9 @@ protected:
     std::vector<std::string> output_prim_data;
 
     std::vector<std::string> spectral_library_files;
+
+    //! Prague Sky Model interface for atmospheric sky radiance calculations
+    helios::PragueSkyModelInterface prague_sky_model;
 };
 
 void sutilHandleError(RTcontext context, RTresult code, const char *file, int line);
@@ -2135,6 +2443,18 @@ void sutilReportError(const char *message);
         RTresult code = func;                                                                                                                                                                                                                            \
         if (code != RT_SUCCESS)                                                                                                                                                                                                                          \
             sutilHandleError(OptiX_Context, code, __FILE__, __LINE__);                                                                                                                                                                                   \
+    } while (0)
+
+/* Destructor-safe version: logs errors but does not call exit() */
+/* Use this ONLY in destructors to avoid exit() being called during cleanup */
+#define RT_CHECK_ERROR_NOEXIT(func)                                                                                                                                                                                                                      \
+    do {                                                                                                                                                                                                                                                 \
+        RTresult code = func;                                                                                                                                                                                                                            \
+        if (code != RT_SUCCESS) {                                                                                                                                                                                                                        \
+            const char *message;                                                                                                                                                                                                                         \
+            rtContextGetErrorString(OptiX_Context, code, &message);                                                                                                                                                                                      \
+            std::cerr << "WARNING (OptiX cleanup): " << message << " (" << __FILE__ << ":" << __LINE__ << ")" << std::endl;                                                                                                                             \
+        }                                                                                                                                                                                                                                                \
     } while (0)
 
 #endif

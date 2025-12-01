@@ -441,7 +441,7 @@ size_t Visualizer::addLine(const vec3 &start, const vec3 &end, const RGBAcolor &
     const std::vector<vec3> vertices{start, end};
 
     size_t UUID = geometry_handler.sampleUUID();
-    geometry_handler.addGeometry(UUID, GeometryHandler::GEOMETRY_TYPE_LINE, vertices, color, {}, -1, false, false, coordFlag, true, false, static_cast<int>(line_width));
+    geometry_handler.addGeometry(UUID, GeometryHandler::GEOMETRY_TYPE_LINE, vertices, color, {}, -1, false, false, coordFlag, true, false, false, line_width);
     return UUID;
 }
 
@@ -1111,7 +1111,7 @@ void Visualizer::updateNavigationGizmo() {
     }
 
     // Gizmo parameters
-    const float axis_length = 0.04f; // Length of each axis line
+    const float axis_length = 0.03f; // Length of each axis line
     const float bubble_size = 0.025f; // Size of letter bubbles
     const float line_width = 3.f;
 

@@ -66,7 +66,9 @@ RadiationModel::RadiationModel(helios::Context *context_a) {
 }
 
 RadiationModel::~RadiationModel() {
-    RT_CHECK_ERROR(rtContextDestroy(OptiX_Context));
+    // Use NOEXIT version in destructor to avoid exit() being called during cleanup
+    // Destructors must never call exit() as it prevents proper cleanup and error reporting
+    RT_CHECK_ERROR_NOEXIT(rtContextDestroy(OptiX_Context));
 }
 
 void RadiationModel::disableMessages() {
@@ -527,9 +529,6 @@ void RadiationModel::setSourceFlux(uint source_ID, const std::string &label, flo
         helios_runtime_error("ERROR (RadiationModel::setSourceFlux): Source ID out of bounds. Only " + std::to_string(radiation_sources.size() - 1) + " radiation sources have been created.");
     } else if (flux < 0) {
         helios_runtime_error("ERROR (RadiationModel::setSourceFlux): Source flux must be non-negative.");
-        //    }else if( !radiation_sources.at(source_ID).source_spectrum.empty() ){
-        //        std::cerr << "WARNING (RadiationModel::setSourceFlux): Source spectrum has previously been set for radiation source by calling RadiationModel::setSourceSpectrum(). The source spectrum will be ignored and overridden based on this
-        //        call to RadiationModel::setSourceFlux()." << std::endl;
     }
 
     radiation_sources.at(source_ID).source_fluxes[label] = flux * radiation_sources.at(source_ID).source_flux_scaling_factor;
@@ -1070,16 +1069,13 @@ void RadiationModel::blendSpectraRandomly(const std::string &new_spectrum_label,
     blendSpectra(new_spectrum_label, spectrum_labels, weights);
 }
 
-void RadiationModel::interpolateSpectrumFromPrimitiveData(const std::vector<uint> &primitive_UUIDs,
-                                                          const std::vector<std::string> &spectra,
-                                                          const std::vector<float> &values,
-                                                          const std::string &primitive_data_query_label,
+void RadiationModel::interpolateSpectrumFromPrimitiveData(const std::vector<uint> &primitive_UUIDs, const std::vector<std::string> &spectra, const std::vector<float> &values, const std::string &primitive_data_query_label,
                                                           const std::string &primitive_data_radprop_label) {
 
     // Validate that spectra and values have the same length
     if (spectra.size() != values.size()) {
-        helios_runtime_error("ERROR (RadiationModel::interpolateSpectrumFromPrimitiveData): The 'spectra' vector (size=" + std::to_string(spectra.size()) +
-                             ") and 'values' vector (size=" + std::to_string(values.size()) + ") must have the same length.");
+        helios_runtime_error("ERROR (RadiationModel::interpolateSpectrumFromPrimitiveData): The 'spectra' vector (size=" + std::to_string(spectra.size()) + ") and 'values' vector (size=" + std::to_string(values.size()) +
+                             ") must have the same length.");
     }
 
     // Validate that vectors are not empty
@@ -1102,10 +1098,9 @@ void RadiationModel::interpolateSpectrumFromPrimitiveData(const std::vector<uint
     }
 
     // Search for existing config with matching query and target labels
-    SpectrumInterpolationConfig* existing_config = nullptr;
-    for (auto &config : spectrum_interpolation_configs) {
-        if (config.query_data_label == primitive_data_query_label &&
-            config.target_data_label == primitive_data_radprop_label) {
+    SpectrumInterpolationConfig *existing_config = nullptr;
+    for (auto &config: spectrum_interpolation_configs) {
+        if (config.query_data_label == primitive_data_query_label && config.target_data_label == primitive_data_radprop_label) {
             existing_config = &config;
             break;
         }
@@ -1138,16 +1133,12 @@ void RadiationModel::interpolateSpectrumFromPrimitiveData(const std::vector<uint
     }
 }
 
-void RadiationModel::interpolateSpectrumFromObjectData(const std::vector<uint> &object_IDs,
-                                                       const std::vector<std::string> &spectra,
-                                                       const std::vector<float> &values,
-                                                       const std::string &object_data_query_label,
+void RadiationModel::interpolateSpectrumFromObjectData(const std::vector<uint> &object_IDs, const std::vector<std::string> &spectra, const std::vector<float> &values, const std::string &object_data_query_label,
                                                        const std::string &primitive_data_radprop_label) {
 
     // Validate that spectra and values have the same length
     if (spectra.size() != values.size()) {
-        helios_runtime_error("ERROR (RadiationModel::interpolateSpectrumFromObjectData): The 'spectra' vector (size=" + std::to_string(spectra.size()) +
-                             ") and 'values' vector (size=" + std::to_string(values.size()) + ") must have the same length.");
+        helios_runtime_error("ERROR (RadiationModel::interpolateSpectrumFromObjectData): The 'spectra' vector (size=" + std::to_string(spectra.size()) + ") and 'values' vector (size=" + std::to_string(values.size()) + ") must have the same length.");
     }
 
     // Validate that vectors are not empty
@@ -1170,10 +1161,9 @@ void RadiationModel::interpolateSpectrumFromObjectData(const std::vector<uint> &
     }
 
     // Search for existing config with matching query and target labels
-    SpectrumInterpolationConfig* existing_config = nullptr;
-    for (auto &config : spectrum_interpolation_configs) {
-        if (config.query_data_label == object_data_query_label &&
-            config.target_data_label == primitive_data_radprop_label) {
+    SpectrumInterpolationConfig *existing_config = nullptr;
+    for (auto &config: spectrum_interpolation_configs) {
+        if (config.query_data_label == object_data_query_label && config.target_data_label == primitive_data_radprop_label) {
             existing_config = &config;
             break;
         }
@@ -1344,6 +1334,10 @@ void RadiationModel::initializeOptiX() {
     RT_CHECK_ERROR(rtContextDeclareVariable(OptiX_Context, "specular_reflection_enabled", &specular_reflection_enabled_RTvariable));
     RT_CHECK_ERROR(rtVariableSet1ui(specular_reflection_enabled_RTvariable, 0));
 
+    // scattering iteration counter for camera ray tracing (specular only computed on iteration 0)
+    RT_CHECK_ERROR(rtContextDeclareVariable(OptiX_Context, "scattering_iteration", &scattering_iteration_RTvariable));
+    RT_CHECK_ERROR(rtVariableSet1ui(scattering_iteration_RTvariable, 0));
+
     // primitive transformation matrix buffer
     addBuffer("transform_matrix", transform_matrix_RTbuffer, transform_matrix_RTvariable, RT_BUFFER_INPUT, RT_FORMAT_FLOAT, 2);
 
@@ -1407,6 +1401,9 @@ void RadiationModel::initializeOptiX() {
     // - bottom - //
     addBuffer("scatter_buff_bottom", scatter_buff_bottom_RTbuffer, scatter_buff_bottom_RTvariable, RT_BUFFER_INPUT_OUTPUT, RT_FORMAT_FLOAT, 1);
 
+    // incident radiation for specular reflection (without rho/tau applied)
+    addBuffer("radiation_specular", radiation_specular_RTbuffer, radiation_specular_RTvariable, RT_BUFFER_INPUT_OUTPUT, RT_FORMAT_FLOAT, 1);
+
     // Energy absorbed by "sky"
     addBuffer("Rsky", Rsky_RTbuffer, Rsky_RTvariable, RT_BUFFER_INPUT_OUTPUT, RT_FORMAT_FLOAT, 1);
 
@@ -1428,6 +1425,9 @@ void RadiationModel::initializeOptiX() {
 
     // External radiation source fluxes
     addBuffer("source_fluxes", source_fluxes_RTbuffer, source_fluxes_RTvariable, RT_BUFFER_INPUT, RT_FORMAT_FLOAT, 1);
+
+    // Camera-weighted source fluxes for specular reflection
+    addBuffer("source_fluxes_cam", source_fluxes_cam_RTbuffer, source_fluxes_cam_RTvariable, RT_BUFFER_INPUT, RT_FORMAT_FLOAT, 1);
 
     // number of radiation bands
     RT_CHECK_ERROR(rtContextDeclareVariable(OptiX_Context, "Nbands_global", &Nbands_global_RTvariable));
@@ -1453,6 +1453,16 @@ void RadiationModel::initializeOptiX() {
 
     // Diffuse distribution normalization factor
     addBuffer("diffuse_dist_norm", diffuse_dist_norm_RTbuffer, diffuse_dist_norm_RTvariable, RT_BUFFER_INPUT, RT_FORMAT_FLOAT, 1);
+
+    // Atmospheric sky radiance parameters for camera miss rays
+    addBuffer("sky_radiance_params", sky_radiance_params_RTbuffer, sky_radiance_params_RTvariable, RT_BUFFER_INPUT, RT_FORMAT_FLOAT4, 1);
+
+    // Base sky radiance for camera atmospheric model (separate from diffuse_flux)
+    addBuffer("camera_sky_radiance", camera_sky_radiance_RTbuffer, camera_sky_radiance_RTvariable, RT_BUFFER_INPUT, RT_FORMAT_FLOAT, 1);
+
+    // Sun direction for atmospheric sky radiance evaluation
+    RT_CHECK_ERROR(rtContextDeclareVariable(OptiX_Context, "sun_direction", &sun_direction_RTvariable));
+    RT_CHECK_ERROR(rtVariableSet3f(sun_direction_RTvariable, 0.f, 0.f, 1.f)); // Default to zenith
 
     // Bounding Box
     addBuffer("bbox_UUID", bbox_UUID_RTbuffer, bbox_UUID_RTvariable, RT_BUFFER_INPUT, RT_FORMAT_UNSIGNED_INT, 1);
@@ -1490,10 +1500,13 @@ void RadiationModel::initializeOptiX() {
     RT_CHECK_ERROR(rtVariableSet1f(camera_lens_diameter_RTvariable, 0.f));
     RT_CHECK_ERROR(rtContextDeclareVariable(OptiX_Context, "FOV_aspect_ratio", &FOV_aspect_RTvariable));
     RT_CHECK_ERROR(rtVariableSet1f(FOV_aspect_RTvariable, 1.f));
+    // Note: "camera_focal_length" in OptiX stores the focal plane distance (working distance for ray generation), not the lens optical focal length
     RT_CHECK_ERROR(rtContextDeclareVariable(OptiX_Context, "camera_focal_length", &camera_focal_length_RTvariable));
     RT_CHECK_ERROR(rtVariableSet1f(camera_focal_length_RTvariable, 0.f));
     RT_CHECK_ERROR(rtContextDeclareVariable(OptiX_Context, "camera_viewplane_length", &camera_viewplane_length_RTvariable));
     RT_CHECK_ERROR(rtVariableSet1f(camera_viewplane_length_RTvariable, 0.f));
+    RT_CHECK_ERROR(rtContextDeclareVariable(OptiX_Context, "camera_pixel_solid_angle", &camera_pixel_solid_angle_RTvariable));
+    RT_CHECK_ERROR(rtVariableSet1f(camera_pixel_solid_angle_RTvariable, 0.f));
     RT_CHECK_ERROR(rtContextDeclareVariable(OptiX_Context, "Ncameras", &Ncameras_RTvariable));
     RT_CHECK_ERROR(rtVariableSet1ui(Ncameras_RTvariable, 0));
     RT_CHECK_ERROR(rtContextDeclareVariable(OptiX_Context, "camera_ID", &camera_ID_RTvariable));
@@ -1762,6 +1775,16 @@ void RadiationModel::initializeOptiX() {
     RT_CHECK_ERROR(rtContextDeclareVariable(OptiX_Context, "launch_offset", &launch_offset_RTvariable));
     RT_CHECK_ERROR(rtVariableSet1ui(launch_offset_RTvariable, 0));
 
+    // camera pixel offsets for tiling large camera launches
+    RT_CHECK_ERROR(rtContextDeclareVariable(OptiX_Context, "camera_pixel_offset_x", &camera_pixel_offset_x_RTvariable));
+    RT_CHECK_ERROR(rtVariableSet1ui(camera_pixel_offset_x_RTvariable, 0));
+    RT_CHECK_ERROR(rtContextDeclareVariable(OptiX_Context, "camera_pixel_offset_y", &camera_pixel_offset_y_RTvariable));
+    RT_CHECK_ERROR(rtVariableSet1ui(camera_pixel_offset_y_RTvariable, 0));
+
+    // full camera resolution for camera ray launches
+    RT_CHECK_ERROR(rtContextDeclareVariable(OptiX_Context, "camera_resolution_full", &camera_resolution_full_RTvariable));
+    RT_CHECK_ERROR(rtVariableSet2i(camera_resolution_full_RTvariable, 0, 0));
+
     // launch primitive face flag
     RT_CHECK_ERROR(rtContextDeclareVariable(OptiX_Context, "launch_face", &launch_face_RTvariable));
     RT_CHECK_ERROR(rtVariableSet1ui(launch_face_RTvariable, 0));
@@ -1774,14 +1797,6 @@ void RadiationModel::initializeOptiX() {
     zeroBuffer1D(max_scatters_RTbuffer, 1);
 
     // RTsize device_memory;
-    // RT_CHECK_ERROR( rtContextGetAttribute( OptiX_Context, RT_CONTEXT_ATTRIBUTE_AVAILABLE_DEVICE_MEMORY, sizeof(RTsize), &device_memory ) );
-
-    // device_memory *= 1e-6;
-    // if( device_memory < 1000 ){
-    //   printf("available device memory at end of OptiX initialization: %6.3f MB\n",device_memory);
-    // }else{
-    //   printf("available device memory at end of OptiX initialization: %6.3f GB\n",device_memory*1e-3);
-    // }
 }
 
 void RadiationModel::updateGeometry() {
@@ -1923,10 +1938,7 @@ void RadiationModel::updateGeometry(const std::vector<uint> &UUIDs) {
 
     m_global.resize(Nobjects);
     ptype_global.resize(Nobjects);
-    twosided_flag_global.resize(Nobjects); // initialize to be two-sided
-    for (size_t i = 0; i < Nobjects; i++) {
-        twosided_flag_global.at(i) = 1;
-    }
+    twosided_flag_global.resize(Nobjects);
 
     // Populate attributes for each primitive in the pointer vector 'primitives'
     for (std::size_t u = 0; u < Nobjects; u++) {
@@ -1942,12 +1954,8 @@ void RadiationModel::updateGeometry(const std::vector<uint> &UUIDs) {
 
         assert(ptype_global.at(u) >= 0 && ptype_global.at(u) <= 4);
 
-        // primitive twosided flag
-        if (context->doesPrimitiveDataExist(p, "twosided_flag")) {
-            uint flag;
-            context->getPrimitiveData(p, "twosided_flag", flag);
-            twosided_flag_global.at(u) = char(flag);
-        }
+        // primitive twosided flag - check material first, then primitive data
+        twosided_flag_global.at(u) = char(context->getPrimitiveTwosidedFlag(p, 1));
 
         uint parentID = context->getPrimitiveParentObjectID(p);
 
@@ -2544,9 +2552,9 @@ void RadiationModel::updateRadiativeProperties() {
     };
 
     // Apply spectral interpolation based on primitive data values
-    for (const auto &config : spectrum_interpolation_configs) {
+    for (const auto &config: spectrum_interpolation_configs) {
         // Validate that all spectra in this config exist in global data and have correct type
-        for (const auto &spectrum_label : config.spectra_labels) {
+        for (const auto &spectrum_label: config.spectra_labels) {
             if (!context->doesGlobalDataExist(spectrum_label.c_str())) {
                 helios_runtime_error("ERROR (RadiationModel::updateRadiativeProperties): Spectral interpolation config references global data '" + spectrum_label + "' which does not exist.");
             }
@@ -2555,7 +2563,7 @@ void RadiationModel::updateRadiativeProperties() {
             }
         }
 
-        for (uint uuid : config.primitive_UUIDs) {
+        for (uint uuid: config.primitive_UUIDs) {
             // Check if primitive still exists in context (it may have been deleted)
             if (!context->doesPrimitiveExist(uuid)) {
                 continue;
@@ -2589,7 +2597,7 @@ void RadiationModel::updateRadiativeProperties() {
         }
 
         // Apply spectral interpolation based on object data values
-        for (uint objID : config.object_IDs) {
+        for (uint objID: config.object_IDs) {
             // Check if object still exists in context (it may have been deleted)
             if (!context->doesObjectExist(objID)) {
                 continue;
@@ -2685,8 +2693,6 @@ void RadiationModel::updateRadiativeProperties() {
             }
         }
     }
-
-    //    printf("%d (rho) %d (tau) unique surface spectra loaded\n", surface_spectra_rho.size(),surface_spectra_tau.size());
 
     // second, calculate unique values of rho and tau for all sources and bands
     std::map<std::string, std::vector<std::vector<float>>> rho_unique;
@@ -2919,63 +2925,6 @@ void RadiationModel::updateRadiativeProperties() {
         helios::PrimitiveType type = context->getPrimitiveType(UUID);
 
         if (type == helios::PRIMITIVE_TYPE_VOXEL) {
-
-            //                // NOTE: This is a little confusing - for volumes of participating media, we're going to use the "rho" variable to store the absorption coefficient and use the "tau" variable to store the scattering coefficient.  This is
-            //                to save on memory so we don't have to define separate arrays.
-            //
-            //                // Absorption coefficient
-            //
-            //                prop = "attenuation_coefficient_" + band;
-            //
-            //                if (context->doesPrimitiveDataExist(UUID, prop.c_str())) {
-            //                    context->getPrimitiveData(UUID, prop.c_str(), rho.at(u).at(b));
-            //                } else {
-            //                    rho.at(u).at(b) = kappa_default;
-            //                    context->setPrimitiveData(UUID, prop.c_str(), kappa_default);
-            //                }
-            //
-            //                if (rho.at(u).at(b) < 0) {
-            //                    rho.at(u).at(b) = 0.f;
-            //                    if (message_flag) {
-            //                        std::cout
-            //                                << "WARNING (RadiationModel): absorption coefficient cannot be less than 0.  Clamping to 0 for band "
-            //                                << band << "." << std::endl;
-            //                    }
-            //                } else if (rho.at(u).at(b) > 1.f) {
-            //                    rho.at(u).at(b) = 1.f;
-            //                    if (message_flag) {
-            //                        std::cout
-            //                                << "WARNING (RadiationModel): absorption coefficient cannot be greater than 1.  Clamping to 1 for band "
-            //                                << band << "." << std::endl;
-            //                    }
-            //                }
-            //
-            //                // Scattering coefficient
-            //
-            //                prop = "scattering_coefficient_" + band;
-            //
-            //                if (context->doesPrimitiveDataExist(UUID, prop.c_str())) {
-            //                    context->getPrimitiveData(UUID, prop.c_str(), tau[u]);
-            //                } else {
-            //                    tau.at(u).at(b) = sigmas_default;
-            //                    context->setPrimitiveData(UUID, prop.c_str(), sigmas_default);
-            //                }
-            //
-            //                if (tau.at(u).at(b) < 0) {
-            //                    tau.at(u).at(b) = 0.f;
-            //                    if (message_flag) {
-            //                        std::cout
-            //                                << "WARNING (RadiationModel): scattering coefficient cannot be less than 0.  Clamping to 0 for band "
-            //                                << band << "." << std::endl;
-            //                    }
-            //                } else if (tau.at(u).at(b) > 1.f) {
-            //                    tau.at(u).at(b) = 1.f;
-            //                    if (message_flag) {
-            //                        std::cout
-            //                                << "WARNING (RadiationModel): scattering coefficient cannot be greater than 1.  Clamping to 1 for band "
-            //                                << band << "." << std::endl;
-            //                    }
-            //                }
 
         } else { // other than voxels
 
@@ -3215,6 +3164,231 @@ void RadiationModel::updateRadiativeProperties() {
     }
 }
 
+std::vector<float> RadiationModel::updateAtmosphericSkyModel(const std::vector<std::string> &band_labels, const RadiationCamera &camera) {
+    // Prague Sky Model implementation for atmospheric sky radiance
+    // Uses validated spectral radiance from brute-force atmospheric simulations
+    // (Wilkie et al. 2021, Vévoda et al. 2022)
+
+    size_t Nbands_launch = band_labels.size();
+    std::vector<float> sky_base_radiances(Nbands_launch, 0.0f);
+
+    // Only run atmospheric sky model if user has explicitly enabled it by setting atmospheric parameters
+    // This prevents the model from running with default values in tests/scripts that don't want it
+    bool has_atmospheric_data = context->doesGlobalDataExist("atmosphere_pressure_Pa") ||
+                               context->doesGlobalDataExist("atmosphere_temperature_K") ||
+                               context->doesGlobalDataExist("atmosphere_humidity_rel") ||
+                               context->doesGlobalDataExist("atmosphere_turbidity");
+
+    if (!has_atmospheric_data) {
+        // No atmospheric parameters set - return zeros (camera will use user-set diffuse flux or 0)
+        return sky_base_radiances;
+    }
+
+    // Read atmospheric parameters from Context global data (set by SolarPosition plugin)
+    // Default values match SolarPosition::getAtmosphericConditions() defaults
+    float pressure_Pa = 101325.f;      // Standard atmosphere (1 atm)
+    float temperature_K = 300.f;       // 27°C
+    float humidity_rel = 0.5f;         // 50% relative humidity
+    float turbidity = 0.02f;           // Clear sky - Ångström's aerosol turbidity coefficient (AOD at 500nm)
+
+    if (context->doesGlobalDataExist("atmosphere_pressure_Pa")) {
+        context->getGlobalData("atmosphere_pressure_Pa", pressure_Pa);
+    }
+    if (context->doesGlobalDataExist("atmosphere_temperature_K")) {
+        context->getGlobalData("atmosphere_temperature_K", temperature_K);
+    }
+    if (context->doesGlobalDataExist("atmosphere_humidity_rel")) {
+        context->getGlobalData("atmosphere_humidity_rel", humidity_rel);
+    }
+    if (context->doesGlobalDataExist("atmosphere_turbidity")) {
+        context->getGlobalData("atmosphere_turbidity", turbidity);
+    }
+
+    // Initialize Prague Sky Model if not already initialized
+    if (!prague_sky_model.isInitialized()) {
+        // Use reduced visible-range dataset (~26 MB) optimized for typical atmospheric conditions
+        std::string dataset_path = "plugins/radiation/spectral_data/prague_sky_model/PragueSkyModelReduced.dat";
+        prague_sky_model.initialize(dataset_path);
+    }
+
+    // Convert turbidity (AOD) to visibility (km) for Prague model
+    // Uses Koschmieder formula: V ≈ 3.9 / turbidity
+    float visibility_km = helios::PragueSkyModelInterface::turbidityToVisibility(turbidity);
+
+    // Get sun direction from first radiation source (assumed to be sun)
+    helios::vec3 sun_dir(0, 0, 1); // Default zenith
+    if (!radiation_sources.empty()) {
+        sun_dir = radiation_sources[0].source_position;
+        sun_dir.normalize();
+    }
+
+    // Set sun direction GPU variable
+    RT_CHECK_ERROR(rtVariableSet3f(sun_direction_RTvariable, sun_dir.x, sun_dir.y, sun_dir.z));
+
+    // Compute per-band sky radiance parameters
+    std::vector<optix::float4> sky_params(Nbands_launch);
+
+    for (size_t b = 0; b < Nbands_launch; b++) {
+        const std::string &band_label = band_labels[b];
+        if (radiation_bands.find(band_label) == radiation_bands.end()) {
+            continue;
+        }
+
+        const RadiationBand &band = radiation_bands.at(band_label);
+
+        // Skip thermal/longwave bands - Prague Sky Model only handles shortwave radiation
+        // Thermal bands have emission enabled (emissionFlag = true)
+        if (band.emissionFlag) {
+            continue;
+        }
+
+        // Get camera spectral response for this band
+        std::string spectral_response_label = "uniform";
+        if (camera.band_spectral_response.find(band_label) != camera.band_spectral_response.end()) {
+            spectral_response_label = camera.band_spectral_response.at(band_label);
+            // If the label is empty or whitespace-only, treat as uniform
+            if (spectral_response_label.empty() || trim_whitespace(spectral_response_label).empty()) {
+                spectral_response_label = "uniform";
+            }
+        }
+
+        // Get camera spectral response data
+        std::vector<helios::vec2> camera_response;
+
+        if (spectral_response_label == "uniform") {
+            // Uniform spectral response - use wavelength bounds from band
+            helios::vec2 wavelength_range = band.wavebandBounds;
+
+            if (wavelength_range.x <= 0.f || wavelength_range.y <= 0.f) {
+                // No wavelength bounds set - infer from band name or use diffuse spectrum
+                bool bounds_inferred = false;
+
+                // Try to infer wavelength range from band name (common RGB bands)
+                if (band_label == "red" || band_label == "R") {
+                    wavelength_range = helios::make_vec2(620.f, 750.f);  // Red: 620-750 nm
+                    bounds_inferred = true;
+                } else if (band_label == "green" || band_label == "G") {
+                    wavelength_range = helios::make_vec2(495.f, 570.f);  // Green: 495-570 nm
+                    bounds_inferred = true;
+                } else if (band_label == "blue" || band_label == "B") {
+                    wavelength_range = helios::make_vec2(450.f, 495.f);  // Blue: 450-495 nm
+                    bounds_inferred = true;
+                }
+
+                if (!bounds_inferred) {
+                    // Check if diffuse spectrum is set - use that for wavelength range
+                    if (!band.diffuse_spectrum.empty()) {
+                        wavelength_range.x = band.diffuse_spectrum.front().x;
+                        wavelength_range.y = band.diffuse_spectrum.back().x;
+                    } else {
+                        helios_runtime_error("ERROR (RadiationModel::updateAtmosphericSkyModel): Camera '" + camera.label +
+                            "' band '" + band_label + "' has uniform spectral response but no wavelength bounds set. " +
+                            "Either set wavelength bounds via addRadiationBand(label, lambda_min, lambda_max) or set camera spectral response via setCameraSpectralResponse().");
+                    }
+                }
+            }
+
+            // Create uniform response over wavelength range
+            camera_response.push_back(helios::make_vec2(wavelength_range.x, 1.0f));
+            camera_response.push_back(helios::make_vec2(wavelength_range.y, 1.0f));
+
+        } else {
+            // Non-uniform spectral response - load from global data
+            camera_response = loadSpectralData(spectral_response_label);
+
+            if (camera_response.empty()) {
+                helios_runtime_error("ERROR (RadiationModel::updateAtmosphericSkyModel): Camera spectral response '" +
+                    spectral_response_label + "' not found for camera '" + camera.label + "' band '" + band_label + "'.");
+            }
+        }
+
+        // --- Query Prague Sky Model ---
+
+        // Sample Prague at multiple directions to understand magnitude and distribution
+        helios::vec3 zenith_dir(0, 0, 1);
+        helios::vec3 horizon_dir(1, 0, 0);  // Toward horizon
+        helios::vec3 sun_45deg_dir = sun_dir;  // Toward sun at 45 deg from it
+        sun_45deg_dir.z = 0.707f;  // Adjust to be 45 deg from zenith
+        sun_45deg_dir.normalize();
+
+        float zenith_radiance = prague_sky_model.computeIntegratedSkyRadiance(
+            zenith_dir, sun_dir, visibility_km, camera_response
+        );
+
+        float horizon_radiance = prague_sky_model.computeIntegratedSkyRadiance(
+            horizon_dir, sun_dir, visibility_km, camera_response
+        );
+
+        // --- Fit Parametric Angular Distribution ---
+        // Using simplified model: L(θ,γ) = L_zen * (1 + A*exp(-γ/B)) * (1 + C*(1-cosθ)) / norm
+        // where θ = zenith angle, γ = angle from sun
+
+        // For initial implementation, use reasonable defaults based on visibility
+        // These could be improved by sampling Prague at multiple directions and fitting
+        float mie_fraction = std::min(1.0f, turbidity / 0.1f);  // Rough estimate
+
+        float circumsolar_strength = 0.5f + 3.0f * mie_fraction;
+        float circumsolar_width = 15.0f + 10.0f * mie_fraction;
+        float horizon_brightness = 1.5f + 0.5f * mie_fraction;
+
+        // Compute normalization factor
+        float zenith_luminance = 1.0f;
+        int N_norm = 50;  // Reduced resolution for faster computation
+        float norm = 0.f;
+
+        for (int j = 0; j < N_norm; j++) {
+            for (int i = 0; i < N_norm; i++) {
+                float theta_norm = 0.5f * M_PI / float(N_norm) * (0.5f + float(i));
+                float phi_norm = 2.f * M_PI / float(N_norm) * (0.5f + float(j));
+
+                helios::vec3 n = sphere2cart(make_SphericalCoord(0.5f * M_PI - theta_norm, phi_norm));
+
+                float cos_gamma_norm = n * sun_dir;
+                float gamma_norm = std::acos(std::max(-1.0f, std::min(1.0f, cos_gamma_norm)));
+                float gamma_deg_norm = gamma_norm * 180.0f / float(M_PI);
+
+                float cos_theta_norm = std::max(0.0f, n.z);
+
+                float radiance_norm = zenith_luminance;
+                radiance_norm *= (1.0f + circumsolar_strength * std::exp(-gamma_deg_norm / circumsolar_width));
+                radiance_norm *= (1.0f + (horizon_brightness - 1.0f) * (1.0f - cos_theta_norm));
+
+                norm += radiance_norm * std::cos(theta_norm) * std::sin(theta_norm) * M_PI / float(N_norm * N_norm);
+            }
+        }
+
+        float normalization = 1.0f / norm;
+
+        // CRITICAL FIX: The GPU multiplies sky_radiance = base_flux × angular_distribution × normalization
+        // The normalization factor (0.647) is meant to normalize the INTEGRAL, but it ends up
+        // REDUCING individual ray radiances, making the sky too dark.
+        //
+        // To compensate, we pre-divide by normalization here, so it cancels out on the GPU:
+        // GPU: sky_radiance = (zenith_radiance / normalization) × pattern × normalization
+        //                   = zenith_radiance × pattern
+        //
+        // This ensures zenith rays get the full Prague radiance value.
+
+        // NEW APPROACH: Keep radiance as-is (don't convert to hemispherical flux)
+        // The GPU will multiply radiance by pixel solid angle to get flux per ray
+        // Camera equation: Flux_pixel = Radiance × Ω_pixel × (1/N_rays)
+        //
+        // For uniform camera response (no spectral weighting), we use the Prague zenith radiance directly
+        float base_radiance_for_gpu = zenith_radiance; // W/m²/sr
+
+        // Store the base radiance for this band (to be used by caller to set diffuse_flux buffer temporarily)
+        sky_base_radiances[b] = base_radiance_for_gpu;
+
+        // Pack into float4: (circumsolar_strength, circumsolar_width, horizon_brightness, normalization)
+        sky_params[b] = optix::make_float4(circumsolar_strength, circumsolar_width, horizon_brightness, normalization);
+    }
+
+    // Upload to GPU buffer
+    initializeBuffer1Dfloat4(sky_radiance_params_RTbuffer, sky_params);
+
+    return sky_base_radiances;
+}
+
 std::vector<helios::vec2> RadiationModel::loadSpectralData(const std::string &global_data_label) const {
 
     std::vector<helios::vec2> spectrum;
@@ -3347,6 +3521,9 @@ void RadiationModel::runBand(const std::vector<std::string> &label) {
     uint Ncameras = cameras.size();
     RT_CHECK_ERROR(rtVariableSet1ui(Ncameras_RTvariable, Ncameras));
 
+    // Note: Atmospheric sky radiance model is updated per-camera (see camera trace loop below)
+    // This allows us to use camera-specific spectral responses for each band
+
     // Set scattering depth for each band
     std::vector<uint> scattering_depth(Nbands_launch);
     bool scatteringenabled = false;
@@ -3376,6 +3553,10 @@ void RadiationModel::runBand(const std::vector<std::string> &label) {
         }
     }
     initializeBuffer1Df(diffuse_flux_RTbuffer, diffuse_flux);
+
+    // Initialize camera sky radiance buffer to zeros (will be set per-camera if atmospheric model is used)
+    std::vector<float> camera_sky_radiance(Nbands_launch, 0.0f);
+    initializeBuffer1Df(camera_sky_radiance_RTbuffer, camera_sky_radiance);
 
     // Set diffuse extinction coefficient for each band
     std::vector<float> diffuse_extinction(Nbands_launch, 0);
@@ -3446,6 +3627,7 @@ void RadiationModel::runBand(const std::vector<std::string> &label) {
     if (Ncameras > 0) {
         zeroBuffer1D(scatter_buff_top_cam_RTbuffer, Nbands_launch * Nprimitives);
         zeroBuffer1D(scatter_buff_bottom_cam_RTbuffer, Nbands_launch * Nprimitives);
+        zeroBuffer1D(radiation_specular_RTbuffer, Nsources * Ncameras * Nprimitives * Nbands_launch);
     }
 
     std::vector<float> TBS_top, TBS_bottom;
@@ -3503,6 +3685,62 @@ void RadiationModel::runBand(const std::vector<std::string> &label) {
         initializeBuffer1Dfloat2(source_widths_RTbuffer, widths);
         initializeBuffer1Dfloat3(source_rotations_RTbuffer, rotations);
         initializeBuffer1Dui(source_types_RTbuffer, types);
+
+        // Compute camera response weighting factors for specular reflection (if cameras exist)
+        // Factor = ∫(source_spectrum × camera_response) / ∫(source_spectrum)
+        // This must be done before ray tracing so the weights are available during miss_direct()
+        if (Ncameras > 0) {
+            std::vector<float> source_fluxes_cam;
+            source_fluxes_cam.resize(Nsources * Nbands_launch * Ncameras, 1.0f);
+
+            for (uint s = 0; s < Nsources; s++) {
+                const RadiationSource &source = radiation_sources.at(s);
+
+                uint cam = 0;
+                for (const auto &camera: cameras) {
+                    for (uint b = 0; b < Nbands_launch; b++) {
+                        std::string band_label = band_labels.at(b);
+
+                        // Default weighting factor (no camera response)
+                        float weight = 1.0f;
+
+                        // Check if camera has spectral response for this band
+                        if (camera.second.band_spectral_response.find(band_label) != camera.second.band_spectral_response.end()) {
+                            std::string response_label = camera.second.band_spectral_response.at(band_label);
+
+                            if (!response_label.empty() && response_label != "uniform" &&
+                                context->doesGlobalDataExist(response_label.c_str()) &&
+                                context->getGlobalDataType(response_label.c_str()) == helios::HELIOS_TYPE_VEC2 &&
+                                source.source_spectrum.size() > 0) {
+
+                                // Load camera spectral response
+                                std::vector<helios::vec2> camera_response;
+                                context->getGlobalData(response_label.c_str(), camera_response);
+
+                                // Get band wavelength range
+                                helios::vec2 wavelength_range = radiation_bands.at(band_label).wavebandBounds;
+
+                                // If no wavelength bounds, use overlapping range of source and camera
+                                if (wavelength_range.x == 0 && wavelength_range.y == 0) {
+                                    wavelength_range.x = fmax(source.source_spectrum.front().x, camera_response.front().x);
+                                    wavelength_range.y = fmin(source.source_spectrum.back().x, camera_response.back().x);
+                                }
+
+                                // Integrate source_spectrum × camera_response over band
+                                // Note: integrateSpectrum already returns ratio: ∫(source × camera) / ∫(source)
+                                weight = integrateSpectrum(s, camera_response, wavelength_range.x, wavelength_range.y);
+                            }
+                        }
+
+                        source_fluxes_cam[s * Nbands_launch * Ncameras + b * Ncameras + cam] = weight;
+                    }
+                    cam++;
+                }
+            }
+
+            // Upload camera-weighted source fluxes to GPU BEFORE ray tracing
+            initializeBuffer1Df(source_fluxes_cam_RTbuffer, source_fluxes_cam);
+        }
 
         // -- Ray Trace -- //
 
@@ -3611,19 +3849,12 @@ void RadiationModel::runBand(const std::vector<std::string> &label) {
                         if (Ncameras > 0) {
                             scatter_buff_top_cam_data[ind] += out_top;
                         }
-                        if (!context->doesPrimitiveDataExist(p, "twosided_flag")) { // if does not exist, assume two-sided
+                        // Check twosided_flag - check material first, then primitive data
+                        uint twosided_flag = context->getPrimitiveTwosidedFlag(p, 1);
+                        if (twosided_flag != 0) {  // If two-sided, emit from bottom face too
                             flux_bottom.at(ind) += flux_top.at(ind);
                             if (Ncameras > 0) {
                                 scatter_buff_bottom_cam_data[ind] += out_top;
-                            }
-                        } else {
-                            uint flag;
-                            context->getPrimitiveData(p, "twosided_flag", flag);
-                            if (flag) {
-                                flux_bottom.at(ind) += flux_top.at(ind);
-                                if (Ncameras > 0) {
-                                    scatter_buff_bottom_cam_data[ind] += out_top;
-                                }
                             }
                         }
                     }
@@ -3637,6 +3868,7 @@ void RadiationModel::runBand(const std::vector<std::string> &label) {
 
         initializeBuffer1Df(radiation_out_top_RTbuffer, flux_top);
         initializeBuffer1Df(radiation_out_bottom_RTbuffer, flux_bottom);
+        // Note: radiation_specular_RTbuffer is populated on GPU via atomicFloatAdd during ray tracing, don't overwrite it here
 
         // Compute diffuse launch dimension
         size_t n = ceil(sqrt(double(diffuseRayCount)));
@@ -3777,6 +4009,24 @@ void RadiationModel::runBand(const std::vector<std::string> &label) {
     // **** CAMERA RAY TRACE **** //
     if (Ncameras > 0) {
 
+        // Set scattering iteration to 0 for specular calculation (specular only computed on first iteration)
+        RT_CHECK_ERROR(rtVariableSet1ui(scattering_iteration_RTvariable, 0));
+
+        // Setup atmospheric sky radiance model for all cameras (must run before any camera rendering)
+        // This computes and uploads sky radiance parameters independently for each camera
+        uint cam = 0;
+        for (auto &camera: cameras) {
+            // Update atmospheric sky radiance model for this camera's spectral bands
+            // Returns the base sky radiance values that should be used for this camera
+            std::vector<float> sky_base_radiances = updateAtmosphericSkyModel(band_labels, camera.second);
+
+            // Upload sky base radiances to separate camera sky radiance buffer
+            // This is completely independent from the diffuse_flux buffer used for radiation transfer
+            initializeBuffer1Df(camera_sky_radiance_RTbuffer, sky_base_radiances);
+
+            cam++;
+        }
+
         if (scatteringenabled && (emissionenabled || diffuseenabled || rundirect)) {
             // re-set outgoing radiation buffers
             copyBuffer1D(scatter_buff_top_cam_RTbuffer, radiation_out_top_RTbuffer);
@@ -3793,7 +4043,7 @@ void RadiationModel::runBand(const std::vector<std::string> &label) {
 
             size_t n = ceil(sqrt(double(diffuseRayCount)));
 
-            uint cam = 0;
+            cam = 0;
             for (auto &camera: cameras) {
 
                 // set variable values
@@ -3802,20 +4052,145 @@ void RadiationModel::runBand(const std::vector<std::string> &label) {
                 RT_CHECK_ERROR(rtVariableSet2f(camera_direction_RTvariable, dir.zenith, dir.azimuth));
                 RT_CHECK_ERROR(rtVariableSet1f(camera_lens_diameter_RTvariable, camera.second.lens_diameter));
                 RT_CHECK_ERROR(rtVariableSet1f(FOV_aspect_RTvariable, camera.second.FOV_aspect_ratio));
+                // Set focal plane distance (working distance for ray generation), not the lens optical focal length
                 RT_CHECK_ERROR(rtVariableSet1f(camera_focal_length_RTvariable, camera.second.focal_length));
                 RT_CHECK_ERROR(rtVariableSet1f(camera_viewplane_length_RTvariable, 0.5f / tanf(0.5f * camera.second.HFOV_degrees * M_PI / 180.f)));
+
+                // Calculate pixel solid angle: Ω_pixel ≈ (angular_size_horizontal) × (angular_size_vertical)
+                // For small angles: Ω ≈ (HFOV/width) × (VFOV/height) in steradians
+                float HFOV_rad = camera.second.HFOV_degrees * M_PI / 180.f;
+                float VFOV_rad = HFOV_rad / camera.second.FOV_aspect_ratio;
+                float pixel_angle_horizontal = HFOV_rad / float(camera.second.resolution.x);
+                float pixel_angle_vertical = VFOV_rad / float(camera.second.resolution.y);
+                float pixel_solid_angle = pixel_angle_horizontal * pixel_angle_vertical; // steradians
+                RT_CHECK_ERROR(rtVariableSet1f(camera_pixel_solid_angle_RTvariable, pixel_solid_angle));
+
                 RT_CHECK_ERROR(rtVariableSet1ui(camera_ID_RTvariable, cam));
 
+                // Set full camera resolution (used for pixel index calculations in ray generation)
+                RT_CHECK_ERROR(rtVariableSet2i(camera_resolution_full_RTvariable, camera.second.resolution.x, camera.second.resolution.y));
+
+                // Allocate full-size buffer (no tiling needed for buffer allocation)
                 zeroBuffer1D(radiation_in_camera_RTbuffer, camera.second.resolution.x * camera.second.resolution.y * Nbands_launch);
 
-                optix::int3 launch_dim_camera = optix::make_int3(camera.second.antialiasing_samples, camera.second.resolution.x, camera.second.resolution.y);
+                // Calculate total rays and check if tiling is needed
+                size_t total_rays = size_t(camera.second.antialiasing_samples) * size_t(camera.second.resolution.x) * size_t(camera.second.resolution.y);
 
-                if (message_flag) {
-                    std::cout << "Performing scattering radiation camera ray trace for camera " << camera.second.label << "..." << std::flush;
+                // Validate antialiasing samples don't exceed maximum alone
+                if (camera.second.antialiasing_samples > maxRays) {
+                    helios_runtime_error("ERROR (runBand): Camera '" + camera.second.label + "' antialiasing samples (" + std::to_string(camera.second.antialiasing_samples) + ") exceeds OptiX maximum launch size (" + std::to_string(maxRays) + "). Reduce antialiasing samples.");
                 }
-                RT_CHECK_ERROR(rtContextLaunch3D(OptiX_Context, RAYTYPE_CAMERA, launch_dim_camera.x, launch_dim_camera.y, launch_dim_camera.z));
-                if (message_flag) {
-                    std::cout << "done." << std::endl;
+
+                if (total_rays <= maxRays) {
+                    // No tiling needed - launch entire camera at once
+
+                    RT_CHECK_ERROR(rtVariableSet1ui(camera_pixel_offset_x_RTvariable, 0));
+                    RT_CHECK_ERROR(rtVariableSet1ui(camera_pixel_offset_y_RTvariable, 0));
+
+                    optix::int3 launch_dim_camera = optix::make_int3(camera.second.antialiasing_samples, camera.second.resolution.x, camera.second.resolution.y);
+
+                    if (message_flag) {
+                        std::cout << "Performing scattering radiation camera ray trace for camera " << camera.second.label << "..." << std::flush;
+                    }
+
+                    RT_CHECK_ERROR(rtContextLaunch3D(OptiX_Context, RAYTYPE_CAMERA, launch_dim_camera.x, launch_dim_camera.y, launch_dim_camera.z));
+
+                    if (message_flag) {
+                        std::cout << "done." << std::endl;
+                    }
+
+                } else {
+                    // Tiling needed
+
+                    // Calculate tile dimensions - tile along height (z-dimension) to keep width intact when possible
+                    size_t rays_per_row = size_t(camera.second.antialiasing_samples) * size_t(camera.second.resolution.x);
+                    size_t max_rows_per_tile = floor(float(maxRays) / float(rays_per_row));
+
+                    if (max_rows_per_tile == 0) {
+                        // Even one row is too large - need to tile both width and height
+
+                        size_t max_pixels_per_tile = floor(float(maxRays) / float(camera.second.antialiasing_samples));
+
+                        // Choose tile dimensions (try to keep aspect ratio)
+                        float aspect = float(camera.second.resolution.x) / float(camera.second.resolution.y);
+                        size_t tile_width = round(sqrt(max_pixels_per_tile * aspect));
+                        size_t tile_height = floor(float(max_pixels_per_tile) / float(tile_width));
+
+                        // Make sure we don't exceed image dimensions
+                        tile_width = fmin(tile_width, camera.second.resolution.x);
+                        tile_height = fmin(tile_height, camera.second.resolution.y);
+
+                        // Calculate number of tiles in each dimension
+                        int Ntiles_x = ceil(float(camera.second.resolution.x) / float(tile_width));
+                        int Ntiles_y = ceil(float(camera.second.resolution.y) / float(tile_height));
+                        int Ntiles_total = Ntiles_x * Ntiles_y;
+
+                        // Loop over tiles
+                        int tile_num = 0;
+                        for (int tile_y = 0; tile_y < Ntiles_y; tile_y++) {
+                            for (int tile_x = 0; tile_x < Ntiles_x; tile_x++) {
+                                tile_num++;
+
+                                // Calculate tile boundaries
+                                size_t offset_x = tile_x * tile_width;
+                                size_t offset_y = tile_y * tile_height;
+
+                                size_t width_this_tile = fmin(tile_width, camera.second.resolution.x - offset_x);
+                                size_t height_this_tile = fmin(tile_height, camera.second.resolution.y - offset_y);
+
+                                // Set offsets
+                                RT_CHECK_ERROR(rtVariableSet1ui(camera_pixel_offset_x_RTvariable, offset_x));
+                                RT_CHECK_ERROR(rtVariableSet1ui(camera_pixel_offset_y_RTvariable, offset_y));
+
+                                // Set launch dimensions for this tile
+                                optix::int3 launch_dim_camera = optix::make_int3(camera.second.antialiasing_samples, width_this_tile, height_this_tile);
+
+                                if (message_flag) {
+                                    std::cout << "Performing scattering radiation camera ray trace for camera " << camera.second.label << " (tile " << tile_num << " of " << Ntiles_total << ")..." << std::flush;
+                                }
+
+                                RT_CHECK_ERROR(rtContextLaunch3D(OptiX_Context, RAYTYPE_CAMERA, launch_dim_camera.x, launch_dim_camera.y, launch_dim_camera.z));
+
+                                if (message_flag) {
+                                    std::cout << "\r" << std::string(120, ' ') << "\r" << std::flush;
+                                }
+                            }
+                        }
+
+                        if (message_flag) {
+                            std::cout << "Performing scattering radiation camera ray trace for camera " << camera.second.label << "...done." << std::endl;
+                        }
+
+                    } else {
+                        // Tile only along height (simpler case)
+
+                        size_t rows_per_tile = fmin(max_rows_per_tile, camera.second.resolution.y);
+                        int Ntiles = ceil(float(camera.second.resolution.y) / float(rows_per_tile));
+
+                        for (int tile = 0; tile < Ntiles; tile++) {
+                            size_t offset_y = tile * rows_per_tile;
+                            size_t height_this_tile = fmin(rows_per_tile, camera.second.resolution.y - offset_y);
+
+                            RT_CHECK_ERROR(rtVariableSet1ui(camera_pixel_offset_x_RTvariable, 0));
+                            RT_CHECK_ERROR(rtVariableSet1ui(camera_pixel_offset_y_RTvariable, offset_y));
+
+                            optix::int3 launch_dim_camera = optix::make_int3(camera.second.antialiasing_samples, camera.second.resolution.x, height_this_tile);
+
+                            if (message_flag) {
+                                std::cout << "Performing scattering radiation camera ray trace for camera " << camera.second.label << " (tile " << tile + 1 << " of " << Ntiles << ")..." << std::flush;
+                            }
+
+                            RT_CHECK_ERROR(rtContextLaunch3D(OptiX_Context, RAYTYPE_CAMERA, launch_dim_camera.x, launch_dim_camera.y, launch_dim_camera.z));
+
+                            if (message_flag) {
+                                std::cout << "\r" << std::string(120, ' ') << "\r" << std::flush;
+                            }
+                        }
+
+                        if (message_flag) {
+                            std::cout << "Performing scattering radiation camera ray trace for camera " << camera.second.label << "...done." << std::endl;
+                        }
+                    }
                 }
 
                 std::vector<float> radiation_camera = getOptiXbufferData(radiation_in_camera_RTbuffer);
@@ -3837,15 +4212,57 @@ void RadiationModel::runBand(const std::vector<std::string> &label) {
 
                 //--- Pixel Labeling Trace ---//
 
+                // Allocate full-size buffers
                 zeroBuffer1D(camera_pixel_label_RTbuffer, camera.second.resolution.x * camera.second.resolution.y);
                 zeroBuffer1D(camera_pixel_depth_RTbuffer, camera.second.resolution.x * camera.second.resolution.y);
 
-                if (message_flag) {
-                    std::cout << "Performing camera pixel labeling ray trace for camera " << camera.second.label << "..." << std::flush;
-                }
-                RT_CHECK_ERROR(rtContextLaunch3D(OptiX_Context, RAYTYPE_PIXEL_LABEL, 1, launch_dim_camera.y, launch_dim_camera.z));
-                if (message_flag) {
-                    std::cout << "done." << std::endl;
+                // Calculate total rays for pixel labeling (1 ray per pixel, no antialiasing)
+                size_t total_rays_label = size_t(camera.second.resolution.x) * size_t(camera.second.resolution.y);
+
+                if (total_rays_label <= maxRays) {
+                    // No tiling needed
+
+                    RT_CHECK_ERROR(rtVariableSet1ui(camera_pixel_offset_x_RTvariable, 0));
+                    RT_CHECK_ERROR(rtVariableSet1ui(camera_pixel_offset_y_RTvariable, 0));
+
+                    if (message_flag) {
+                        std::cout << "Performing camera pixel labeling ray trace for camera " << camera.second.label << "..." << std::flush;
+                    }
+
+                    RT_CHECK_ERROR(rtContextLaunch3D(OptiX_Context, RAYTYPE_PIXEL_LABEL, 1, camera.second.resolution.x, camera.second.resolution.y));
+
+                    if (message_flag) {
+                        std::cout << "done." << std::endl;
+                    }
+
+                } else {
+                    // Tile along height only (since antialiasing_samples = 1 for pixel labeling)
+
+                    size_t max_rows_per_tile = floor(float(maxRays) / float(camera.second.resolution.x));
+                    size_t rows_per_tile = fmin(max_rows_per_tile, camera.second.resolution.y);
+                    int Ntiles = ceil(float(camera.second.resolution.y) / float(rows_per_tile));
+
+                    for (int tile = 0; tile < Ntiles; tile++) {
+                        size_t offset_y = tile * rows_per_tile;
+                        size_t height_this_tile = fmin(rows_per_tile, camera.second.resolution.y - offset_y);
+
+                        RT_CHECK_ERROR(rtVariableSet1ui(camera_pixel_offset_x_RTvariable, 0));
+                        RT_CHECK_ERROR(rtVariableSet1ui(camera_pixel_offset_y_RTvariable, offset_y));
+
+                        if (message_flag) {
+                            std::cout << "Performing camera pixel labeling ray trace for camera " << camera.second.label << " (tile " << tile + 1 << " of " << Ntiles << ")..." << std::flush;
+                        }
+
+                        RT_CHECK_ERROR(rtContextLaunch3D(OptiX_Context, RAYTYPE_PIXEL_LABEL, 1, camera.second.resolution.x, height_this_tile));
+
+                        if (message_flag) {
+                            std::cout << "\r" << std::string(120, ' ') << "\r" << std::flush;
+                        }
+                    }
+
+                    if (message_flag) {
+                        std::cout << "Performing camera pixel labeling ray trace for camera " << camera.second.label << "...done." << std::endl;
+                    }
                 }
 
                 camera.second.pixel_label_UUID = getOptiXbufferData_ui(camera_pixel_label_RTbuffer);
@@ -3883,6 +4300,16 @@ void RadiationModel::runBand(const std::vector<std::string> &label) {
                 }
             }
         }
+    }
+
+    // Apply camera exposure based on each camera's exposure setting
+    for (auto &camera : cameras) {
+        camera.second.applyCameraExposure(context);
+    }
+
+    // Apply camera white balance based on each camera's white_balance setting
+    for (auto &camera : cameras) {
+        camera.second.applyCameraWhiteBalance(context);
     }
 
     // deposit any energy that is left to make sure we satisfy conservation of energy
@@ -4080,6 +4507,16 @@ void RadiationModel::zeroBuffer1D(RTbuffer &buffer, size_t bsize) {
         }
 
         initializeBuffer1Dfloat3(buffer, array);
+
+    } else if (format == RT_FORMAT_FLOAT4) {
+
+        std::vector<optix::float4> array;
+        array.resize(bsize);
+        for (int i = 0; i < bsize; i++) {
+            array.at(i) = optix::make_float4(0, 0, 0, 0);
+        }
+
+        initializeBuffer1Dfloat4(buffer, array);
 
     } else if (format == RT_FORMAT_INT) {
 
@@ -5191,61 +5628,89 @@ std::string RadiationModel::autoCalibrateCameraImage(const std::string &camera_l
         helios_runtime_error("ERROR (RadiationModel::autoCalibrateCameraImage): Camera pixel UUID data '" + pixel_UUID_label + "' does not exist for camera '" + camera_label + "'. Make sure the radiation model has been run.");
     }
 
-    // Step 2: Detect colorboard type using CameraCalibration helper
+    // Step 2: Detect all colorboard types using CameraCalibration helper
     CameraCalibration calibration(context);
-    std::string colorboard_type;
+    std::vector<std::string> colorboard_types;
     try {
-        colorboard_type = calibration.detectColorBoardType();
+        colorboard_types = calibration.detectColorBoardTypes();
     } catch (const std::exception &e) {
-        helios_runtime_error("ERROR (RadiationModel::autoCalibrateCameraImage): Failed to detect colorboard type. " + std::string(e.what()));
+        helios_runtime_error("ERROR (RadiationModel::autoCalibrateCameraImage): Failed to detect colorboard types. " + std::string(e.what()));
     }
 
-    // Step 3: Get reference Lab values for the detected colorboard
+    // Step 3: Get reference Lab values for all detected colorboards
     std::vector<CameraCalibration::LabColor> reference_lab_values;
-    if (colorboard_type == "DGK") {
-        reference_lab_values = calibration.getReferenceLab_DGK();
-    } else if (colorboard_type == "Calibrite") {
-        reference_lab_values = calibration.getReferenceLab_Calibrite();
-    } else if (colorboard_type == "SpyderCHECKR") {
-        reference_lab_values = calibration.getReferenceLab_SpyderCHECKR();
-    } else {
-        helios_runtime_error("ERROR (RadiationModel::autoCalibrateCameraImage): Unsupported colorboard type '" + colorboard_type + "'.");
+    std::vector<std::string> colorboard_type_per_patch; // Track which colorboard each patch belongs to
+
+    for (const auto &colorboard_type: colorboard_types) {
+        std::vector<CameraCalibration::LabColor> current_reference_values;
+
+        if (colorboard_type == "DGK") {
+            current_reference_values = calibration.getReferenceLab_DGK();
+        } else if (colorboard_type == "Calibrite") {
+            current_reference_values = calibration.getReferenceLab_Calibrite();
+        } else if (colorboard_type == "SpyderCHECKR") {
+            current_reference_values = calibration.getReferenceLab_SpyderCHECKR();
+        } else {
+            helios_runtime_error("ERROR (RadiationModel::autoCalibrateCameraImage): Unsupported colorboard type '" + colorboard_type + "'.");
+        }
+
+        // Add to combined list
+        reference_lab_values.insert(reference_lab_values.end(), current_reference_values.begin(), current_reference_values.end());
+
+        // Track which colorboard type each patch belongs to
+        for (size_t i = 0; i < current_reference_values.size(); i++) {
+            colorboard_type_per_patch.push_back(colorboard_type);
+        }
     }
 
-    // Step 4: Generate segmentation masks for colorboard patches
+    // Step 4: Generate segmentation masks for all colorboard patches
     std::vector<uint> pixel_UUIDs;
     context->getGlobalData(pixel_UUID_label.c_str(), pixel_UUIDs);
     int2 camera_resolution = cameras.at(camera_label).resolution;
 
     // Create segmentation masks by finding pixels that belong to colorboard patches
     std::map<int, std::vector<std::vector<bool>>> patch_masks;
-    for (int patch_idx = 0; patch_idx < (int) reference_lab_values.size(); patch_idx++) {
-        std::vector<std::vector<bool>> mask(camera_resolution.y, std::vector<bool>(camera_resolution.x, false));
+    int global_patch_idx = 0; // Global patch index across all colorboards
 
-        // Find pixels that correspond to this colorboard patch
-        for (int y = 0; y < camera_resolution.y; y++) {
-            for (int x = 0; x < camera_resolution.x; x++) {
-                int pixel_index = y * camera_resolution.x + x;
-                uint pixel_UUID = pixel_UUIDs[pixel_index];
+    for (const auto &colorboard_type: colorboard_types) {
+        // Get the number of patches for this colorboard type
+        int num_patches = 0;
+        if (colorboard_type == "DGK") {
+            num_patches = 18;
+        } else if (colorboard_type == "Calibrite" || colorboard_type == "SpyderCHECKR") {
+            num_patches = 24;
+        }
 
-                if (pixel_UUID > 0) { // Valid primitive
-                    pixel_UUID--; // Convert from 1-based to 0-based indexing
+        // Generate masks for each patch in this colorboard
+        for (int local_patch_idx = 0; local_patch_idx < num_patches; local_patch_idx++) {
+            std::vector<std::vector<bool>> mask(camera_resolution.y, std::vector<bool>(camera_resolution.x, false));
 
-                    // Check if this primitive belongs to the colorboard patch
-                    std::string colorboard_data_label = "colorboard_" + colorboard_type;
-                    if (context->doesPrimitiveDataExist(pixel_UUID, colorboard_data_label.c_str())) {
-                        uint patch_id;
-                        context->getPrimitiveData(pixel_UUID, colorboard_data_label.c_str(), patch_id);
-                        // Patch indices are 0-based, compare directly
-                        if ((int) patch_id == patch_idx) {
-                            mask[y][x] = true;
+            // Find pixels that correspond to this colorboard patch
+            for (int y = 0; y < camera_resolution.y; y++) {
+                for (int x = 0; x < camera_resolution.x; x++) {
+                    int pixel_index = y * camera_resolution.x + x;
+                    uint pixel_UUID = pixel_UUIDs[pixel_index];
+
+                    if (pixel_UUID > 0) { // Valid primitive
+                        pixel_UUID--; // Convert from 1-based to 0-based indexing
+
+                        // Check if this primitive belongs to this specific colorboard patch
+                        std::string colorboard_data_label = "colorboard_" + colorboard_type;
+                        if (context->doesPrimitiveDataExist(pixel_UUID, colorboard_data_label.c_str())) {
+                            uint patch_id;
+                            context->getPrimitiveData(pixel_UUID, colorboard_data_label.c_str(), patch_id);
+                            // Patch indices are 0-based, compare directly
+                            if ((int) patch_id == local_patch_idx) {
+                                mask[y][x] = true;
+                            }
                         }
                     }
                 }
             }
-        }
 
-        patch_masks[patch_idx] = mask;
+            patch_masks[global_patch_idx] = mask;
+            global_patch_idx++;
+        }
     }
 
     // Step 5: Extract RGB colors from processed camera data (same source as writeCameraImage)
@@ -5653,7 +6118,14 @@ std::string RadiationModel::autoCalibrateCameraImage(const std::string &camera_l
     // Generate quality of fit report if requested
     if (print_quality_report) {
         std::cout << "\n========== COLOR CALIBRATION QUALITY REPORT ==========" << std::endl;
-        std::cout << "Colorboard type: " << colorboard_type << std::endl;
+        std::cout << "Colorboard types: ";
+        for (size_t i = 0; i < colorboard_types.size(); i++) {
+            std::cout << colorboard_types[i];
+            if (i < colorboard_types.size() - 1) {
+                std::cout << ", ";
+            }
+        }
+        std::cout << std::endl;
         std::cout << "Number of patches analyzed: " << visible_patches << std::endl;
         std::cout << "Algorithm used: " << algorithm_name << std::endl;
 
@@ -5829,7 +6301,15 @@ std::string RadiationModel::autoCalibrateCameraImage(const std::string &camera_l
             double mean_delta_e = (valid_patches > 0) ? (total_delta_e / valid_patches) : -1.0;
 
             // Export CCM to XML file
-            exportColorCorrectionMatrixXML(ccm_export_file_path, camera_label, correction_matrix, output_path, colorboard_type, (float) mean_delta_e);
+            // Concatenate all colorboard types into a single string
+            std::string colorboard_types_str;
+            for (size_t i = 0; i < colorboard_types.size(); i++) {
+                colorboard_types_str += colorboard_types[i];
+                if (i < colorboard_types.size() - 1) {
+                    colorboard_types_str += ", ";
+                }
+            }
+            exportColorCorrectionMatrixXML(ccm_export_file_path, camera_label, correction_matrix, output_path, colorboard_types_str, (float) mean_delta_e);
 
             std::cout << "Exported color correction matrix to: " << ccm_export_file_path << std::endl;
         } catch (const std::exception &e) {
