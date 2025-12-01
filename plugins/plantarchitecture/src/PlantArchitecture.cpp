@@ -1871,7 +1871,20 @@ Phytomer::Phytomer(const PhytomerParameters &params, Shoot *parent_shoot, uint p
                     float ind_from_tip = float(leaf) - float(leaves_per_petiole - 1) / 2.f;
                     uint objID_leaf = phytomer_parameters.leaf.prototype.prototype_function(context_ptr, &phytomer_parameters.leaf.prototype, ind_from_tip);
                     if (phytomer_parameters.leaf.prototype.prototype_function == GenericLeafPrototype) {
-                        context_ptr->setPrimitiveData(context_ptr->getObjectPrimitiveUUIDs(objID_leaf), "object_label", "leaf");
+                        auto leaf_uuids = context_ptr->getObjectPrimitiveUUIDs(objID_leaf);
+                        for (uint leaf_uuid: leaf_uuids) {
+                            std::string data_label = "";
+                            // add this so petiolules don't get converted to leaves
+                            if (context_ptr->doesPrimitiveDataExist(leaf_uuid, "object_label")) {
+                                context_ptr->getPrimitiveData(leaf_uuid, "object_label", data_label);
+                            }
+                            if (data_label == "petiolule") {
+                                continue;
+                            } else {
+                                context_ptr->setPrimitiveData(leaf_uuid, "object_label", "leaf");
+                            }
+                        }
+                        //context_ptr->setPrimitiveData(context_ptr->getObjectPrimitiveUUIDs(objID_leaf), "object_label", "leaf");
                     }
                     plantarchitecture_ptr->unique_leaf_prototype_objIDs.at(phytomer_parameters.leaf.prototype.unique_prototype_identifier).at(prototype).push_back(objID_leaf);
                     std::vector<uint> petiolule_UUIDs = context_ptr->filterPrimitivesByData(context_ptr->getObjectPrimitiveUUIDs(objID_leaf), "object_label", "petiolule");

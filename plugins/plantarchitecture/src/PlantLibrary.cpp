@@ -1354,9 +1354,9 @@ void PlantArchitecture::initializeCowpeaShoots() {
     leaf_prototype_trifoliate.midrib_fold_fraction = 0.2;
     leaf_prototype_trifoliate.longitudinal_curvature.uniformDistribution(-0.3f, -0.1f);
     leaf_prototype_trifoliate.lateral_curvature = -0.4f;
-    leaf_prototype_trifoliate.subdivisions = 6;
+    leaf_prototype_trifoliate.subdivisions = 3;
     leaf_prototype_trifoliate.unique_prototypes = 5;
-    leaf_prototype_trifoliate.build_petiolule = true;
+    leaf_prototype_trifoliate.build_petiolule = false;
 
     LeafPrototype leaf_prototype_unifoliate = leaf_prototype_trifoliate;
     leaf_prototype_unifoliate.leaf_texture_file.clear();
@@ -1381,8 +1381,8 @@ void PlantArchitecture::initializeCowpeaShoots() {
     phytomer_parameters_trifoliate.petiole.taper = 0.25;
     phytomer_parameters_trifoliate.petiole.curvature.uniformDistribution(-200, -50);
     phytomer_parameters_trifoliate.petiole.color = make_RGBcolor(0.2, 0.25, 0.06);
-    phytomer_parameters_trifoliate.petiole.length_segments = 5;
-    phytomer_parameters_trifoliate.petiole.radial_subdivisions = 6;
+    phytomer_parameters_trifoliate.petiole.length_segments = 3;
+    phytomer_parameters_trifoliate.petiole.radial_subdivisions = 5;
 
     phytomer_parameters_trifoliate.leaf.leaves_per_petiole = 3;
     phytomer_parameters_trifoliate.leaf.pitch.normalDistribution(45, 20);
@@ -1399,8 +1399,8 @@ void PlantArchitecture::initializeCowpeaShoots() {
     phytomer_parameters_trifoliate.peduncle.roll = 90;
     phytomer_parameters_trifoliate.peduncle.curvature.uniformDistribution(50, 250);
     phytomer_parameters_trifoliate.peduncle.color = make_RGBcolor(0.17, 0.213, 0.051);
-    phytomer_parameters_trifoliate.peduncle.length_segments = 6;
-    phytomer_parameters_trifoliate.peduncle.radial_subdivisions = 6;
+    phytomer_parameters_trifoliate.peduncle.length_segments = 3;
+    phytomer_parameters_trifoliate.peduncle.radial_subdivisions = 5;
 
     phytomer_parameters_trifoliate.inflorescence.flowers_per_peduncle.uniformDistribution(1, 3);
     phytomer_parameters_trifoliate.inflorescence.flower_offset = 0.025;
@@ -1507,7 +1507,7 @@ void PlantArchitecture::initializeGrapevineVSPShoots() {
     leaf_prototype.lateral_curvature = 0;
     leaf_prototype.wave_period = 0.3f;
     leaf_prototype.wave_amplitude = 0.1f;
-    leaf_prototype.subdivisions = 5;
+    leaf_prototype.subdivisions = 3;
     leaf_prototype.unique_prototypes = 10;
     leaf_prototype.leaf_offset = make_vec3(-0.3, 0, 0);
 
@@ -1583,7 +1583,7 @@ void PlantArchitecture::initializeGrapevineVSPShoots() {
     ShootParameters shoot_parameters_cane = shoot_parameters_main;
     //    shoot_parameters_cane.phytomer_parameters.internode.image_texture = helios::resolvePluginAsset("plantarchitecture", "assets/textures/GrapeBark.jpg").string().c_str();
     shoot_parameters_cane.phytomer_parameters.internode.pitch = 0;
-    shoot_parameters_cane.phytomer_parameters.internode.radial_subdivisions = 15;
+    shoot_parameters_cane.phytomer_parameters.internode.radial_subdivisions = 6;
     shoot_parameters_cane.phytomer_parameters.internode.max_floral_buds_per_petiole = 0;
     shoot_parameters_cane.phytomer_parameters.internode.phyllotactic_angle = 0;
     shoot_parameters_cane.insertion_angle_tip.uniformDistribution(60, 120);
@@ -1600,7 +1600,7 @@ void PlantArchitecture::initializeGrapevineVSPShoots() {
     shoot_parameters_trunk.phytomer_parameters.internode.pitch = 0;
     shoot_parameters_trunk.phytomer_parameters.internode.phyllotactic_angle = 0;
     shoot_parameters_trunk.phytomer_parameters.internode.radius_initial = 0.05;
-    shoot_parameters_trunk.phytomer_parameters.internode.radial_subdivisions = 25;
+    shoot_parameters_trunk.phytomer_parameters.internode.radial_subdivisions = 6;
     shoot_parameters_trunk.phytomer_parameters.internode.max_floral_buds_per_petiole = 0;
     shoot_parameters_trunk.phyllochron_min = 2.5;
     shoot_parameters_trunk.insertion_angle_tip = 90;
@@ -1959,7 +1959,7 @@ void PlantArchitecture::initializeMaizeShoots() {
     leaf_prototype.wave_amplitude = 0.1f;
     leaf_prototype.leaf_buckle_length.uniformDistribution(0.4, 0.6);
     leaf_prototype.leaf_buckle_angle.uniformDistribution(40, 50);
-    leaf_prototype.subdivisions = 50;
+    leaf_prototype.subdivisions = 10;
     leaf_prototype.unique_prototypes = 10;
 
     // ---- Phytomer Parameters ---- //
@@ -1971,7 +1971,7 @@ void PlantArchitecture::initializeMaizeShoots() {
     phytomer_parameters_maize.internode.radius_initial = 0.0075;
     phytomer_parameters_maize.internode.color = make_RGBcolor(0.126, 0.182, 0.084);
     phytomer_parameters_maize.internode.length_segments = 2;
-    phytomer_parameters_maize.internode.radial_subdivisions = 10;
+    phytomer_parameters_maize.internode.radial_subdivisions = 5;
     phytomer_parameters_maize.internode.max_floral_buds_per_petiole = 1;
     phytomer_parameters_maize.internode.max_vegetative_buds_per_petiole = 0;
 
@@ -1994,7 +1994,7 @@ void PlantArchitecture::initializeMaizeShoots() {
     phytomer_parameters_maize.peduncle.radius = 0.004;
     phytomer_parameters_maize.peduncle.curvature = 0;
     phytomer_parameters_maize.peduncle.color = phytomer_parameters_maize.internode.color;
-    phytomer_parameters_maize.peduncle.radial_subdivisions = 6;
+    phytomer_parameters_maize.peduncle.radial_subdivisions = 5;
     phytomer_parameters_maize.peduncle.length_segments = 2;
 
     phytomer_parameters_maize.inflorescence.flowers_per_peduncle = 7;
@@ -2614,7 +2614,7 @@ void PlantArchitecture::initializeRiceShoots() {
     leaf_prototype.lateral_curvature = -0.3;
     leaf_prototype.wave_period = 0.1f;
     leaf_prototype.wave_amplitude = 0.1f;
-    leaf_prototype.subdivisions = 20;
+    leaf_prototype.subdivisions = 6;
     leaf_prototype.unique_prototypes = 10;
 
     // ---- Phytomer Parameters ---- //
@@ -2650,8 +2650,8 @@ void PlantArchitecture::initializeRiceShoots() {
     phytomer_parameters_rice.peduncle.radius = 0.0005;
     phytomer_parameters_rice.peduncle.color = phytomer_parameters_rice.internode.color;
     phytomer_parameters_rice.peduncle.curvature.uniformDistribution(-800, -50);
-    phytomer_parameters_rice.peduncle.radial_subdivisions = 6;
-    phytomer_parameters_rice.peduncle.length_segments = 8;
+    phytomer_parameters_rice.peduncle.radial_subdivisions = 5;
+    phytomer_parameters_rice.peduncle.length_segments = 4;
 
     phytomer_parameters_rice.inflorescence.flowers_per_peduncle = 60;
     phytomer_parameters_rice.inflorescence.pitch.uniformDistribution(20, 25);
@@ -2715,7 +2715,7 @@ void PlantArchitecture::initializeButterLettuceShoots() {
     leaf_prototype.lateral_curvature = -0.4f;
     leaf_prototype.wave_period.uniformDistribution(0.15, 0.25);
     leaf_prototype.wave_amplitude.uniformDistribution(0.05, 0.1);
-    leaf_prototype.subdivisions = 30;
+    leaf_prototype.subdivisions = 10;
     leaf_prototype.unique_prototypes = 10;
 
     // ---- Phytomer Parameters ---- //
@@ -2727,7 +2727,7 @@ void PlantArchitecture::initializeButterLettuceShoots() {
     phytomer_parameters.internode.radius_initial = 0.02;
     phytomer_parameters.internode.color = make_RGBcolor(0.402, 0.423, 0.413);
     phytomer_parameters.internode.length_segments = 1;
-    phytomer_parameters.internode.radial_subdivisions = 10;
+    phytomer_parameters.internode.radial_subdivisions = 5;
 
     phytomer_parameters.petiole.petioles_per_internode = 1;
     phytomer_parameters.petiole.pitch.uniformDistribution(0, 30);
@@ -2898,9 +2898,9 @@ void PlantArchitecture::initializeSoybeanShoots() {
     leaf_prototype.midrib_fold_fraction = 0.1f;
     leaf_prototype.longitudinal_curvature.uniformDistribution(0.1, 0.2);
     leaf_prototype.lateral_curvature = 0.45;
-    leaf_prototype.subdivisions = 8;
+    leaf_prototype.subdivisions = 2;
     leaf_prototype.unique_prototypes = 5;
-    leaf_prototype.build_petiolule = true;
+    leaf_prototype.build_petiolule = false;
 
     PhytomerParameters phytomer_parameters_trifoliate(context_ptr->getRandomGenerator());
 
@@ -2910,7 +2910,7 @@ void PlantArchitecture::initializeSoybeanShoots() {
     phytomer_parameters_trifoliate.internode.max_floral_buds_per_petiole = 1;
     phytomer_parameters_trifoliate.internode.max_vegetative_buds_per_petiole = 1;
     phytomer_parameters_trifoliate.internode.color = make_RGBcolor(0.2, 0.25, 0.05);
-    phytomer_parameters_trifoliate.internode.length_segments = 5;
+    phytomer_parameters_trifoliate.internode.length_segments = 3;
 
     phytomer_parameters_trifoliate.petiole.petioles_per_internode = 1;
     phytomer_parameters_trifoliate.petiole.pitch.uniformDistribution(15, 40);
@@ -2919,8 +2919,8 @@ void PlantArchitecture::initializeSoybeanShoots() {
     phytomer_parameters_trifoliate.petiole.taper = 0.25;
     phytomer_parameters_trifoliate.petiole.curvature.uniformDistribution(-250, 50);
     phytomer_parameters_trifoliate.petiole.color = phytomer_parameters_trifoliate.internode.color;
-    phytomer_parameters_trifoliate.petiole.length_segments = 5;
-    phytomer_parameters_trifoliate.petiole.radial_subdivisions = 6;
+    phytomer_parameters_trifoliate.petiole.length_segments = 2;
+    phytomer_parameters_trifoliate.petiole.radial_subdivisions = 5;
 
     phytomer_parameters_trifoliate.leaf.leaves_per_petiole = 3;
     phytomer_parameters_trifoliate.leaf.pitch.uniformDistribution(-30, 10);
@@ -2938,7 +2938,7 @@ void PlantArchitecture::initializeSoybeanShoots() {
     phytomer_parameters_trifoliate.peduncle.curvature.uniformDistribution(-500, 500);
     phytomer_parameters_trifoliate.peduncle.color = phytomer_parameters_trifoliate.internode.color;
     phytomer_parameters_trifoliate.peduncle.length_segments = 1;
-    phytomer_parameters_trifoliate.peduncle.radial_subdivisions = 6;
+    phytomer_parameters_trifoliate.peduncle.radial_subdivisions = 5;
 
     phytomer_parameters_trifoliate.inflorescence.flowers_per_peduncle.uniformDistribution(1, 4);
     phytomer_parameters_trifoliate.inflorescence.flower_offset = 0.2;
@@ -3043,7 +3043,7 @@ void PlantArchitecture::initializeStrawberryShoots() {
     leaf_prototype.lateral_curvature = -0.35f;
     leaf_prototype.wave_period = 0.4f;
     leaf_prototype.wave_amplitude = 0.03f;
-    leaf_prototype.subdivisions = 6;
+    leaf_prototype.subdivisions = 1;
     leaf_prototype.unique_prototypes = 10;
 
     // ---- Phytomer Parameters ---- //
@@ -3160,7 +3160,7 @@ void PlantArchitecture::initializeSugarbeetShoots() {
     leaf_prototype.petiole_roll = 0.75f;
     leaf_prototype.wave_period.uniformDistribution(0.08f, 0.15f);
     leaf_prototype.wave_amplitude.uniformDistribution(0.02, 0.04);
-    leaf_prototype.subdivisions = 20;
+    leaf_prototype.subdivisions = 10;
     ;
     leaf_prototype.unique_prototypes = 10;
 
@@ -3243,35 +3243,36 @@ void PlantArchitecture::initializeTomatoShoots() {
     leaf_prototype.lateral_curvature = -0.3f;
     leaf_prototype.wave_period = 0.35f;
     leaf_prototype.wave_amplitude = 0.08f;
-    leaf_prototype.subdivisions = 6;
+    leaf_prototype.subdivisions = 3;
     leaf_prototype.unique_prototypes = 5;
+    leaf_prototype.build_petiolule = true;
 
     // ---- Phytomer Parameters ---- //
 
     PhytomerParameters phytomer_parameters(context_ptr->getRandomGenerator());
 
     phytomer_parameters.internode.pitch = 10;
-    phytomer_parameters.internode.phyllotactic_angle.uniformDistribution(140, 220);
+    phytomer_parameters.internode.phyllotactic_angle.uniformDistribution(100, 170);
     phytomer_parameters.internode.radius_initial = 0.001;
     phytomer_parameters.internode.color = make_RGBcolor(0.2495, 0.3162, 0.0657);
-    phytomer_parameters.internode.length_segments = 1;
+    phytomer_parameters.internode.length_segments = 3;
 
     phytomer_parameters.petiole.petioles_per_internode = 1;
     phytomer_parameters.petiole.pitch.uniformDistribution(45, 60);
     phytomer_parameters.petiole.radius = 0.002;
     phytomer_parameters.petiole.length = 0.2;
-    phytomer_parameters.petiole.taper = 0.25;
-    phytomer_parameters.petiole.curvature.uniformDistribution(-150, -50);
+    phytomer_parameters.petiole.taper = 0.5;
+    phytomer_parameters.petiole.curvature.uniformDistribution(-350, -300);
     phytomer_parameters.petiole.color = make_RGBcolor(0.3, 0.37, 0.0657);
-    phytomer_parameters.petiole.length_segments = 5;
+    phytomer_parameters.petiole.length_segments = 3;
 
-    phytomer_parameters.leaf.leaves_per_petiole = 7;
+    phytomer_parameters.leaf.leaves_per_petiole = 5;
     phytomer_parameters.leaf.pitch.uniformDistribution(-30, 5);
     phytomer_parameters.leaf.yaw = 10;
     phytomer_parameters.leaf.roll = 0;
-    phytomer_parameters.leaf.leaflet_offset = 0.15;
-    phytomer_parameters.leaf.leaflet_scale = 0.7;
-    phytomer_parameters.leaf.prototype_scale.uniformDistribution(0.12, 0.18);
+    phytomer_parameters.leaf.leaflet_offset = 0.25;
+    phytomer_parameters.leaf.leaflet_scale = 1.1;
+    phytomer_parameters.leaf.prototype_scale.uniformDistribution(0.06, 0.08);
     phytomer_parameters.leaf.prototype = leaf_prototype;
 
     phytomer_parameters.peduncle.length = 0.18;
@@ -3280,10 +3281,10 @@ void PlantArchitecture::initializeTomatoShoots() {
     phytomer_parameters.peduncle.roll = 0;
     phytomer_parameters.peduncle.curvature = -900;
     phytomer_parameters.peduncle.color = phytomer_parameters.internode.color;
-    phytomer_parameters.peduncle.length_segments = 5;
-    phytomer_parameters.peduncle.radial_subdivisions = 8;
+    phytomer_parameters.peduncle.length_segments = 2;
+    phytomer_parameters.peduncle.radial_subdivisions = 5;
 
-    phytomer_parameters.inflorescence.flowers_per_peduncle = 6;
+    phytomer_parameters.inflorescence.flowers_per_peduncle = 2;
     phytomer_parameters.inflorescence.flower_offset = 0.15;
     phytomer_parameters.inflorescence.pitch = 80;
     phytomer_parameters.inflorescence.roll = 180;
@@ -3312,7 +3313,7 @@ void PlantArchitecture::initializeTomatoShoots() {
 
     shoot_parameters.phyllochron_min = 2;
     shoot_parameters.elongation_rate_max = 0.1;
-    shoot_parameters.girth_area_factor = 2.f;
+    shoot_parameters.girth_area_factor = 3.f;
     shoot_parameters.vegetative_bud_break_time = 30;
     shoot_parameters.vegetative_bud_break_probability_min = 0.25;
     shoot_parameters.vegetative_bud_break_probability_decay_rate = -0.25;
@@ -3367,7 +3368,7 @@ void PlantArchitecture::initializeCherryTomatoShoots() {
 
     PhytomerParameters phytomer_parameters(context_ptr->getRandomGenerator());
 
-    phytomer_parameters.internode.pitch = 5;
+    phytomer_parameters.internode.pitch = 0;
     phytomer_parameters.internode.phyllotactic_angle.uniformDistribution(14, 220);
     phytomer_parameters.internode.radius_initial = 0.001;
     phytomer_parameters.internode.color = make_RGBcolor(0.2495, 0.3162, 0.0657);
@@ -3398,8 +3399,8 @@ void PlantArchitecture::initializeCherryTomatoShoots() {
     phytomer_parameters.peduncle.roll = 0;
     phytomer_parameters.peduncle.curvature = -1000;
     phytomer_parameters.peduncle.color = phytomer_parameters.internode.color;
-    phytomer_parameters.peduncle.length_segments = 5;
-    phytomer_parameters.peduncle.radial_subdivisions = 8;
+    phytomer_parameters.peduncle.length_segments = 3;
+    phytomer_parameters.peduncle.radial_subdivisions = 5;
 
     phytomer_parameters.inflorescence.flowers_per_peduncle = 6;
     phytomer_parameters.inflorescence.flower_offset = 0.15;
