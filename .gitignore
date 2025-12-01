@@ -5,3 +5,8 @@
 # Compiled outputs 
 samples/*/build/*
 projects/*/build/*
+
+.vscode
+projects/*
+!projects/procedural_model
+samples/*

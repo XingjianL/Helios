@@ -144,7 +144,7 @@ uint GenericLeafPrototype(helios::Context *context_ptr, LeafPrototype *prototype
     context_ptr->translatePrimitive(UUIDs, prototype_parameters->leaf_offset);
 
     if (prototype_parameters->build_petiolule) {
-        std::vector<uint> UUIDs_petiolule = context_ptr->loadOBJ(helios::resolvePluginAsset("plantarchitecture", "assets/obj/PetiolulePrototype.obj").string().c_str(), make_vec3(0, 0, 0), 0, nullrotation, RGB::black, "ZUP", true);
+        std::vector<uint> UUIDs_petiolule = context_ptr->loadOBJ(helios::resolvePluginAsset("plantarchitecture", "assets/obj/PetiolulePlane.obj").string().c_str(), make_vec3(0, 0, 0), 0, nullrotation, RGB::black, "ZUP", true);
         context_ptr->translatePrimitive(UUIDs, make_vec3(0.07, 0, 0.005));
         UUIDs.insert(UUIDs.end(), UUIDs_petiolule.begin(), UUIDs_petiolule.end());
     }
@@ -867,13 +867,13 @@ uint StrawberryFruitPrototype(helios::Context *context_ptr, uint subdivisions) {
 }
 
 uint TomatoFruitPrototype(helios::Context *context_ptr, uint subdivisions) {
-    std::vector<uint> UUIDs = context_ptr->loadOBJ(helios::resolvePluginAsset("plantarchitecture", "assets/obj/TomatoFruit.obj").string().c_str(), make_vec3(0., 0, 0), 0.75, nullrotation, RGB::black, "ZUP", true);
+    std::vector<uint> UUIDs = context_ptr->loadOBJ(helios::resolvePluginAsset("plantarchitecture", "assets/obj/TomatoFruitSimple.obj").string().c_str(), make_vec3(0., 0, 0), 0.75, nullrotation, RGB::black, "ZUP", true);
     uint objID = context_ptr->addPolymeshObject(UUIDs);
     return objID;
 }
 
 uint TomatoFlowerPrototype(helios::Context *context_ptr, uint subdivisions, bool flower_is_open) {
-    std::vector<uint> UUIDs = context_ptr->loadOBJ(helios::resolvePluginAsset("plantarchitecture", "assets/obj/TomatoFlower.obj").string().c_str(), make_vec3(0.0, 0, 0), 0.75, nullrotation, RGB::black, "ZUP", true);
+    std::vector<uint> UUIDs = context_ptr->loadOBJ(helios::resolvePluginAsset("plantarchitecture", "assets/obj/TomatoFlowerSimple.obj").string().c_str(), make_vec3(0.0, 0, 0), 0.75, nullrotation, RGB::black, "ZUP", true);
     uint objID = context_ptr->addPolymeshObject(UUIDs);
     return objID;
 }
