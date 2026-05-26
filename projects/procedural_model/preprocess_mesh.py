@@ -81,7 +81,7 @@ def preprocess_model(input_path, preprocessed_path):
                 block[0] = f"newmtl {new_mat}\n"
                 new_mtl_lines.extend(block)
             else:
-                print(f"⚠️ Original material {orig_mat} not found in MTL")
+                print(f"Original material {orig_mat} not found in MTL")
 
         # Save updated MTL
         converted_mtl = new_mtl_lines
@@ -145,20 +145,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-# === Settings ===
-# input_path = "/home/lxianglabxing/pythonscripts/temp/helios_model_reduce/test2.obj"
-# preprocessed_path = "/home/lxianglabxing/pythonscripts/temp/helios_model_reduce/preprocess/temp.obj"
-# output_path = "/home/lxianglabxing/pythonscripts/temp/helios_model_reduce/output_merged2.obj"
-# converted_mtl = ""
-# converted_obj = ""
-# === Step 1: Pre-process OBJ to rename duplicate materials per object ===
-# --- Step 1: Read OBJ ---
-
-
-#print(f"✅ Preprocessed OBJ saved as {preprocessed_path}")
-
-
-
-    #print(f"✅ Updated MTL saved as {new_mtl_path}")
-
-# === Step 2: Load preprocessed OBJ and merge duplicate vertices per mesh ===

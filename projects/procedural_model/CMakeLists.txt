@@ -14,7 +14,7 @@ set( EXECUTABLE_NAME "procedural_model" )
 set( SOURCE_FILES "main.cpp" )
 
 #specify which plug-ins to use (separate plug-in names with semicolon)
-set( PLUGINS "plantarchitecture" )
+set( PLUGINS "plantarchitecture;radiation;visualizer;voxelintersection" )
 set( PYTHON_SCRIPTS 
     "${CMAKE_CURRENT_SOURCE_DIR}/preprocess_mesh.py" 
     "${CMAKE_CURRENT_SOURCE_DIR}/unique_leaves.py"

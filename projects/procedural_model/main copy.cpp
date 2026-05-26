@@ -147,10 +147,10 @@ std::string read_bson_until(
                 std::cout << "Received: " << last_json << "\n";
 
                 bool match = last_json.find(find_string) != std::string::npos;
-                std::cout << match << "\n";
+
                 bson_free(str);
                 bson_destroy(doc);
-                std::cout << find_string << " Match: " << match << "\n";
+
                 if (match) {
                     finished = true;
                     timer.cancel();
@@ -210,69 +210,28 @@ int main(int argc, char **argv) {
     packet = build_subscribe_bson("/ue5/LoadModel", "std_msgs/String");
     asio::write(socket, asio::buffer(packet));
 
-    std::vector<std::string> plant_models = {
-        "soybean",
-        "tomato",
-        "strawberry",
-        "sugarbeet",
-        
-        // "butterlettuce",
-        // "maize",
-        // //"puncturevine",
-        // "capsicum",
-        // "wheat",
-        // "asparagus"
-    };
+
     // configure the Helios procedural model framework
     Context context;
     PlantArchitecture plantarchitecture(&context);
-    context.seedRandomGenerator(7);                            // Seed
+    context.seedRandomGenerator(10);                            // Seed
     plantarchitecture.loadPlantModelFromLibrary("tomato");      // plant model
     vec3 canopy_center(0.f, 0.f, 0.f);
     vec2 plant_spacing(0.5f, 0.5f);                             // plant spacing (meters)
-    int2 plant_count(1,1);                                     // number of plants
-    const size_t CHUNK_SIZE = 512 * 1024;                        // mesh data packet size
-    float plant_age = 1.f;                                      // gap days
-    plantarchitecture.buildPlantCanopyFromLibrary(canopy_center, plant_spacing, plant_count, 56.f); // build the canopy at the start date
-    for (int i = 0; i < 20; i++) {
-        // Context context;
-        // PlantArchitecture plantarchitecture(&context);
-        // context.seedRandomGenerator(7);                            // Seed
-        // plantarchitecture.loadPlantModelFromLibrary(plant_models[i]);      // plant model
-        // vec3 canopy_center(0.f, 0.f, 0.f);
-        // vec2 plant_spacing(0.5f, 0.5f);                             // plant spacing (meters)
-        // int2 plant_count(3,10);                                     // number of plants
-        // const size_t CHUNK_SIZE = 64 * 1024;                        // mesh data packet size
-        // float plant_age = 1.f;                                      // gap days
-        // plantarchitecture.buildPlantCanopyFromLibrary(canopy_center, plant_spacing, plant_count, 30.f);
-        std::cout << "Age: " << i << "\n";
-        if (i > 0) {
-            std::string result = read_bson_until(
-                socket,
-                io_context,
-                "NextAge",                        // search for this
-                std::chrono::hours(24), // timeout
-                CHUNK_SIZE
-            );
-
-            if (result.empty()) {
-                std::cout << "Timed out or error\n";
-                std::exit(1);
-            } else {
-                std::cout << "Final matched JSON:\n" << result << "\n";
-            }
-        }
-        context.writeOBJ("test.obj");
+    int2 plant_count(1, 1);                                     // number of plants
+    const size_t CHUNK_SIZE = 64 * 1024;                        // mesh data packet size
+    float plant_age = 7.f;                                      // gap days
+    plantarchitecture.buildPlantCanopyFromLibrary(canopy_center, plant_spacing, plant_count, 28.f); // build the canopy at the start date
+    for (int i = 0; i < 10; i++) {
         // generate the plant as it ages
         // indicate the obj to be reset
-        std::cout << "Resetting the mesh\n";
         packet = build_publish_bson("/ue5/game_commands", "OBJClear:OBJClear");
         asio::write(socket, asio::buffer(packet));
         std::string result = read_bson_until(
             socket,
             io_context,
             "OBJCleared",                        // search for this
-            std::chrono::milliseconds(60000), // timeout
+            std::chrono::milliseconds(5000), // timeout
             CHUNK_SIZE
         );
 
@@ -283,17 +242,15 @@ int main(int argc, char **argv) {
             std::cout << "Final matched JSON:\n" << result << "\n";
         }
 
-        
+        context.writeOBJ("test.obj");
 
         // remove the previous merged mesh
         std::remove("test_merge.obj");
         // optimize and merge the generated mesh
-        // std::string command = "python3 preprocess_mesh.py --input_obj test.obj --output_obj test_merge.obj";
         std::string command = "python3 unique_leaves.py --input_obj test.obj --output_obj test_merge.obj";
-
         std::system(command.c_str());
         while (!std::filesystem::exists("test_merge.obj")) {
-            //std::cout << "Waiting file preprocess\n";
+            std::cout << "Waiting file preprocess\n";
         }
         // send the mesh MTL data
         auto file_data = read_file("test.mtl");
@@ -305,7 +262,7 @@ int main(int argc, char **argv) {
             socket,
             io_context,
             "MTLReceived",                        // search for this
-            std::chrono::milliseconds(60000), // timeout
+            std::chrono::milliseconds(5000), // timeout
             CHUNK_SIZE
         );
 
@@ -323,44 +280,24 @@ int main(int argc, char **argv) {
         for (size_t obj_byte = 0; obj_byte < file_data.size(); obj_byte += CHUNK_SIZE) {
             chunks.push_back(file_data.substr(obj_byte, CHUNK_SIZE));
         }
-        const int MAX_RETRIES = 3;
+        for (size_t chunk_idx = 0; chunk_idx < chunks.size(); chunk_idx++) {
+            file_data = "OBJData:" + chunks[chunk_idx];
+            packet = build_publish_bson("/ue5/game_commands", file_data);
+            asio::write(socket, asio::buffer(packet));
+            std::cout << "Mesh OBJ sending:"<< chunk_idx << " total: " << chunks.size() << "\n";
+            result = read_bson_until(
+                socket,
+                io_context,
+                "OBJReceived",                        // search for this
+                std::chrono::milliseconds(5000), // timeout
+                CHUNK_SIZE
+            );
 
-        for (size_t chunk_idx = 0; chunk_idx < chunks.size(); ++chunk_idx) {
-            bool success = false;
-
-            for (int attempt = 1; attempt <= MAX_RETRIES; ++attempt) {
-
-                file_data = "OBJData"+std::to_string(chunk_idx)+":" + chunks[chunk_idx];
-                packet = build_publish_bson("/ue5/game_commands", file_data);
-
-                asio::write(socket, asio::buffer(packet));
-
-                std::cout << "Mesh OBJ sending: " << chunk_idx
-                        << "/" << chunks.size()
-                        << " attempt " << attempt << "\n";
-                std::string find_string = "OBJReceived:"+ std::to_string(chunk_idx);
-                result = read_bson_until(
-                    socket,
-                    io_context,
-                    find_string,
-                    std::chrono::milliseconds(1000),
-                    CHUNK_SIZE
-                );
-
-                if (!result.empty()) {
-                    std::cout << "Chunk " << chunk_idx << " acknowledged.\n";
-                    success = true;
-                    break;  // exit retry loop
-                }
-
-                std::cout << "Timeout on chunk " << chunk_idx
-                        << " (attempt " << attempt << ")\n";
-            }
-
-            if (!success) {
-                std::cerr << "Failed to send chunk " << chunk_idx
-                        << " after " << MAX_RETRIES << " retries.\n";
+            if (result.empty()) {
+                std::cout << "Timed out or error\n";
                 std::exit(1);
+            } else {
+                std::cout << "Final matched JSON:\n" << result << "\n";
             }
         }
         
@@ -372,7 +309,7 @@ int main(int argc, char **argv) {
             socket,
             io_context,
             "true",                        // search for this
-            std::chrono::milliseconds(60000), // timeout
+            std::chrono::milliseconds(1000), // timeout
             CHUNK_SIZE
         );
 
@@ -392,7 +329,20 @@ int main(int argc, char **argv) {
         plantarchitecture.advanceTime(plant_age);
 
         // wait until the simulation is done with the sent plant
+        result = read_bson_until(
+            socket,
+            io_context,
+            "NextAge",                        // search for this
+            std::chrono::hours(24), // timeout
+            CHUNK_SIZE
+        );
 
+        if (result.empty()) {
+            std::cout << "Timed out or error\n";
+            std::exit(1);
+        } else {
+            std::cout << "Final matched JSON:\n" << result << "\n";
+        }
     }
     
     
