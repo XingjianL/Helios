@@ -167,7 +167,7 @@ def simplify_mesh(new_lines, output_path, converted_mtl):
             uv_leaves_count_side = 16
             max_per_mesh = uv_leaves_count_side**2
             if any(s in name for s in ["petiole", "fruit", "shoot"]): # elements that get further instance at different frequencies to leaves
-                uv_leaves_count_side = 8
+                uv_leaves_count_side = 16
                 max_per_mesh = uv_leaves_count_side**2
             #if "leaf" not in name:
             # if comp.faces.shape[0] < 2:
